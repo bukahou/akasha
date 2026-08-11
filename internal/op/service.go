@@ -33,7 +33,20 @@ type TokenSet struct {
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
-var ErrPKCEMismatch = errors.New("PKCE verifier 校验失败")
+// RFC 7636 §4.1: code_verifier 是 43-128 个字符的高熵随机串。
+// 太短 = 熵不足, 截获 challenge 后可暴力反推; 太长 = 拒绝服务面。
+// 字符集限定 [A-Za-z0-9-._~] 全 ASCII, 故字节数即字符数。
+const (
+	pkceVerifierMinLen = 43
+	pkceVerifierMaxLen = 128
+)
+
+// 这三个都是"请求方的错", 必须映射成 400 invalid_grant 而非 500 —— 见 handler.token。
+var (
+	ErrPKCEMismatch    = errors.New("PKCE verifier 校验失败")
+	ErrPKCEMalformed   = errors.New("code_verifier 长度不合规 (RFC 7636 要求 43-128 字符)")
+	ErrUserUnavailable = errors.New("用户不存在或已封禁")
+)
 
 // Service OIDC 协议核心业务: code 签发/兑换 + 三 token 组装。
 type Service struct {
@@ -81,7 +94,11 @@ func (s *Service) ExchangeCode(ctx context.Context, clientID, code, verifier, re
 	if ac.ClientID != clientID || ac.RedirectURI != redirectURI {
 		return nil, ErrCodeInvalid
 	}
-	// PKCE: S256(verifier) == 签发时的 challenge
+	// PKCE: 先验形状再验值 —— 长度不合规的 verifier 根本没资格参与比对
+	if len(verifier) < pkceVerifierMinLen || len(verifier) > pkceVerifierMaxLen {
+		return nil, ErrPKCEMalformed
+	}
+	// S256(verifier) == 签发时的 challenge
 	if computeS256(verifier) != ac.PKCEChallenge {
 		return nil, ErrPKCEMismatch
 	}
@@ -95,7 +112,7 @@ func (s *Service) RefreshTokens(ctx context.Context, clientID, refreshToken stri
 		return nil, err
 	}
 	if rt.ClientID != clientID {
-		return nil, ErrCodeInvalid
+		return nil, ErrRefreshInvalid
 	}
 	return s.issueTokens(ctx, rt.UserID, rt.ClientID, "")
 }
@@ -106,8 +123,10 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 	if err != nil {
 		return nil, err
 	}
+	// 封禁用户拿旧 refresh 来刷新时会走到这里。必须是 400 invalid_grant:
+	// 返 500 会让 RP 判定为"akasha 故障"而重试, 正确行为是把用户踢去重新登录。
 	if u == nil || u.Status != account.StatusActive {
-		return nil, errors.New("用户不存在或已封禁")
+		return nil, ErrUserUnavailable
 	}
 
 	now := time.Now()

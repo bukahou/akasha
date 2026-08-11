@@ -2,6 +2,7 @@ package op
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -56,8 +57,16 @@ func SafeLocalNext(next string) bool {
 }
 
 // RedirectWithCode 把 code(+state) 送回 RP 回调 (前信道, 只带非机密)。
-func RedirectWithCode(w http.ResponseWriter, r *http.Request, redirectURI, code, state string) {
-	u, _ := url.Parse(redirectURI)
+//
+// redirectURI 已过白名单精确匹配, 值来自管理员写进 clients 表的配置 ——
+// 但"可信来源"不等于"格式合法": 一个手滑写坏的白名单值会让 url.Parse 返回 nil,
+// 紧接着的 u.Query() 就是 nil 解引用 panic, 整个 IdP 随之崩溃。
+// 触发概率低而代价是全线不可用, 所以这里必须把 error 收上来。
+func RedirectWithCode(w http.ResponseWriter, r *http.Request, redirectURI, code, state string) error {
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		return fmt.Errorf("redirect_uri 解析失败: %w", err)
+	}
 	q := u.Query()
 	q.Set("code", code)
 	if state != "" {
@@ -65,4 +74,5 @@ func RedirectWithCode(w http.ResponseWriter, r *http.Request, redirectURI, code,
 	}
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+	return nil
 }

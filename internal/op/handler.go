@@ -102,7 +102,12 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("签发授权码", "client_id", req.ClientID, "user_id", sess.UserID)
-	RedirectWithCode(w, r, req.RedirectURI, code, req.State)
+	if err := RedirectWithCode(w, r, req.RedirectURI, code, req.State); err != nil {
+		// code 已签发但送不回去 —— 它 60 秒后自然过期, 无需额外清理
+		slog.Error("回跳 RP 失败", "err", err, "client_id", req.ClientID)
+		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
+		return
+	}
 }
 
 // token 后信道: client 认证 → code 兑换 / refresh 滚动。
@@ -139,7 +144,13 @@ func (h *Handler) token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		if errors.Is(err, ErrCodeInvalid) || errors.Is(err, ErrPKCEMismatch) {
+		// 请求方的错 → 400 invalid_grant (RFC 6749 §5.2)。
+		// 只有真正的服务端故障才配 500 —— 分错了会让 RP 把"用户被封禁"当成
+		// akasha 宕机去重试, 而不是引导用户重新登录。
+		switch {
+		case errors.Is(err, ErrCodeInvalid), errors.Is(err, ErrRefreshInvalid),
+			errors.Is(err, ErrPKCEMismatch), errors.Is(err, ErrPKCEMalformed),
+			errors.Is(err, ErrUserUnavailable):
 			writeTokenError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 			return
 		}

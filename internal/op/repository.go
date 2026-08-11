@@ -38,7 +38,12 @@ type RefreshToken struct {
 
 func (RefreshToken) TableName() string { return "refresh_tokens" }
 
-var ErrCodeInvalid = errors.New("授权码无效或已使用")
+// 两种凭证各有各的错误 —— 文案会原样进 RP 收到的 error_description,
+// 复用一个变量会让 refresh 失败时报"授权码无效", 排查的人直接被带偏。
+var (
+	ErrCodeInvalid    = errors.New("授权码无效或已使用")
+	ErrRefreshInvalid = errors.New("refresh token 无效或已使用")
+)
 
 // Repository auth_codes / refresh_tokens 两表访问。
 type Repository struct {
@@ -86,7 +91,7 @@ func (r *Repository) ConsumeRefresh(ctx context.Context, token string) (*Refresh
 		return nil, res.Error
 	}
 	if res.RowsAffected == 0 {
-		return nil, ErrCodeInvalid
+		return nil, ErrRefreshInvalid
 	}
 	var rt RefreshToken
 	if err := r.db.WithContext(ctx).Where("token_hash = ?", hash).First(&rt).Error; err != nil {
