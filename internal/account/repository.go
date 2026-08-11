@@ -42,7 +42,7 @@ func (r *Repository) ExistsUsername(ctx context.Context, username string) (bool,
 }
 
 // InsertUser 建号; email 为空串时 Omit 该列 → DB 默认 NULL
-// (uk_email 唯一索引只豁免 NULL 不豁免 '', 两个无邮箱用户存 '' 会撞索引)。
+// (uk_email 唯一索引只豁免 NULL 不豁免空串, 两个无邮箱用户都存空串会撞索引)。
 func (r *Repository) InsertUser(ctx context.Context, u *User) error {
 	tx := r.db.WithContext(ctx)
 	if u.Email == "" {

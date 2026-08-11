@@ -38,10 +38,6 @@ import (
 	"net/http"
 	"os"
 
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
-
 	"github.com/bukahou/akasha/internal/account"
 	"github.com/bukahou/akasha/internal/client"
 	"github.com/bukahou/akasha/internal/config"
@@ -50,6 +46,7 @@ import (
 	"github.com/bukahou/akasha/internal/op"
 	"github.com/bukahou/akasha/internal/server"
 	"github.com/bukahou/akasha/internal/session"
+	"github.com/bukahou/akasha/internal/storage"
 )
 
 func main() {
@@ -64,10 +61,8 @@ func main() {
 	}
 
 	// ③ 存储 — 七张表的唯一连接池, 后面所有 repository 共用这一个 *gorm.DB
-	//    GORM 日志设 Warn: 屏蔽逐条 SQL, 只留慢查询与真实错误 (JSON 日志环境不要噪音)
-	db, err := gorm.Open(mysql.Open(cfg.DBDSN), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
-	})
+	//    连接参数与日志策略见 storage 包 (装配蓝图不管那些细节)
+	db, err := storage.OpenMySQL(cfg.DBDSN)
 	if err != nil {
 		slog.Error("连接数据库失败", "err", err)
 		os.Exit(1)
