@@ -2,28 +2,40 @@
 
 自研 **OpenID Connect Provider**（第一方身份联邦中枢），用 Go 实现。
 
-为一组自有应用提供统一登录与 SSO：对下游应用扮演 IdP，对上游（Google 等）扮演联邦 broker。
+为一组自有应用提供第三方登录聚合与 SSO：对下游应用扮演 IdP，对上游（Google 等）扮演联邦 broker。
 
 > 名字取自「阿卡夏记录」——记载一切存在的档案。
 
 ## 为什么造这个
 
-多个自有应用各写一套登录、各接一遍 Google，是重复劳动也是安全风险面。把身份收敛到一个中枢后：
-应用只实现一次标准 OIDC RP，新增登录方式（GitHub / Passkey / MFA）全在中枢配置，应用零改动。
+多个应用各接一遍 Google、各维护一套 OAuth 回调，是重复劳动也是风险面。
+把上游联邦收敛到一个中枢后：应用只实现一次标准 OIDC RP，
+新增登录方式（GitHub / Passkey / MFA）全在中枢完成，应用零改动。
 
 同时这是一个**训练项目**：亲手实现 OIDC 协议的两侧（Provider 与 Relying Party），
 而不是部署一个 Keycloak 了事。
 
+### 边界：它是增强，不是唯一入口
+
+akasha **不做本地密码认证**——没有注册页，没有找回密码，认证入口只有上游联邦。
+接入的应用保留各自完整的本地账号体系，akasha 是它们登录页上的一个额外按钮。
+
+因此 akasha 的用户表只承担一个职责：**跨应用的统一身份编号**。
+同一个上游账号在所有应用里映射到同一个 `sub`，换上游 provider 时身份也不断。
+
 ## 状态
 
-**M1 开发中** — 核心协议链路已通，尚未上线。
+**核心协议链路已跑通并验证**，尚未上线。
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
-| M1 | discovery / JWKS / authorize / token / 密码登录 | ✅ 代码完成 |
-| M2 | Google 上游联邦 / 注册 / 找回密码 / userinfo | 计划中 |
+| M1 | discovery / JWKS / authorize / token | ✅ 代码完成 |
+| M1.5 | 运行时验收（完整授权码流程 + 外部验签） | ✅ 通过 |
+| M2 | Google 上游联邦 / userinfo / 移除临时密码登录 | 计划中 |
 | M3 | 安全加固 + 部署上线 | 计划中 |
-| M4 | 更多应用接入 | 计划中 |
+| M4 | GitHub provider / 更多应用接入 | 计划中 |
+
+> 当前的密码登录是 M1 阶段的**临时验收入口**，M2 联邦可用后移除。
 
 ⚠️ **尚未做安全加固**（CSRF token、速率限制、安全响应头等），请勿直接用于生产。
 
@@ -44,13 +56,18 @@ internal/
 ├── keys/        RS256 密钥管理 + JWKS 发布 + 轮换
 ├── client/      RP 注册表 (谁有资格请求身份)
 ├── session/     中枢会话 — SSO 的载体
-├── account/     用户库 = 身份权威 (密码验证 / 联邦认亲 / 自动建号)
+├── account/     用户库 = 身份权威 (联邦认亲 / 自动建号 / 统一身份编号)
 ├── login/       托管登录页 (服务端渲染, 无前端框架)
+├── federation/  上游 broker (provider 抽象 + 各上游实现)   ← M2
 ├── config/      环境变量配置
 └── server/      HTTP 生命周期
 ```
 
-依赖方向单向：`op → keys/client/session/account`，`login → session/account`，`account` 不依赖任何人。
+依赖方向单向：`op → keys/client/session/account`，`login → session/account/federation`，
+`federation → account`，`account` 不依赖任何人。
+
+`op` 与 `federation` 是同一套 OIDC 概念的镜像两侧：前者发授权码给下游（当 Provider），
+后者拿授权码找上游换（当 Relying Party），中间同为 `account` 裁决身份。
 
 ### 一次登录的流程
 
