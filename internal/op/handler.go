@@ -40,13 +40,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // discovery RFC 8414 / OIDC Discovery 发现文档。
 func (h *Handler) discovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                h.issuer,
-		"authorization_endpoint":                h.issuer + "/authorize",
-		"token_endpoint":                        h.issuer + "/token",
-		"jwks_uri":                              h.issuer + "/jwks",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"subject_types_supported":               []string{"public"},
+		"issuer":                   h.issuer,
+		"authorization_endpoint":   h.issuer + "/authorize",
+		"token_endpoint":           h.issuer + "/token",
+		"jwks_uri":                 h.issuer + "/jwks",
+		"response_types_supported": []string{"code"},
+		"grant_types_supported":    []string{"authorization_code", "refresh_token"},
+		// pairwise: 每个 client 拿到不同的 sub, 下游之间无法比对出"这是同一个人"。
+		// 三个下游面向完全不同的人群, 身份隔离是刻意的 (见 CLAUDE.md 身份标识策略)。
+		"subject_types_supported":               []string{"pairwise"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "email", "profile"},
 		"code_challenge_methods_supported":      []string{"S256"},

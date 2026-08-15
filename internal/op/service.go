@@ -2,12 +2,13 @@ package op
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"strconv"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -50,15 +51,16 @@ var (
 
 // Service OIDC 协议核心业务: code 签发/兑换 + 三 token 组装。
 type Service struct {
-	repo    *Repository
-	keys    *keys.Manager
-	account *account.Repository
-	issuer  string
-	ttl     TTLConfig
+	repo         *Repository
+	keys         *keys.Manager
+	account      *account.Repository
+	issuer       string
+	pairwiseSalt string // 只进 PairwiseSub, 永不出现在任何 token/日志里
+	ttl          TTLConfig
 }
 
-func NewService(repo *Repository, km *keys.Manager, accountRepo *account.Repository, issuer string, ttl TTLConfig) *Service {
-	return &Service{repo: repo, keys: km, account: accountRepo, issuer: issuer, ttl: ttl}
+func NewService(repo *Repository, km *keys.Manager, accountRepo *account.Repository, issuer, pairwiseSalt string, ttl TTLConfig) *Service {
+	return &Service{repo: repo, keys: km, account: accountRepo, issuer: issuer, pairwiseSalt: pairwiseSalt, ttl: ttl}
 }
 
 // IssueCode 签发一次性授权码 (会话已确认后由 /authorize 调用)。
@@ -129,10 +131,18 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 		return nil, ErrUserUnavailable
 	}
 
+	// internal_id 缺失说明这行是 pairwise 改造前的历史数据 —— 宁可拒绝签发,
+	// 也不能退回用 u.ID 当 sub (那会让下游把不同的人认成同一个)。
+	if u.InternalID == "" {
+		return nil, fmt.Errorf("用户缺少 internal_id, 无法计算 pairwise sub: user_id=%d", u.ID)
+	}
+
 	now := time.Now()
+	// ⚠️ 这里【绝不能】出现 u.ID 或 u.InternalID —— 下游一旦拿到跨 client 相同的标识,
+	// pairwise 立刻破功 (两个应用一比对就知道是同一个人)。sub 是唯一的身份标识。
 	base := jwt.MapClaims{
 		"iss":                s.issuer,
-		"sub":                jwtSub(u.ID),
+		"sub":                PairwiseSub(clientID, u.InternalID, s.pairwiseSalt),
 		"aud":                clientID,
 		"iat":                now.Unix(),
 		"email":              u.Email,
@@ -180,9 +190,33 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 	}, nil
 }
 
-// jwtSub sub = akasha 用户 id 的十进制字符串 (OIDC 规范 sub 是 string)。
-func jwtSub(userID int64) string {
-	return strconv.FormatInt(userID, 10)
+// PairwiseSub 计算面向某个 client 的 sub (OIDC Core §8 pairwise)。
+//
+// # 为什么是 pairwise 而不是所有 client 共用一个 sub
+//
+// 三个下游应用面向完全不同的人群 (geass 是媒体消费者, atlhyper 是运维)。
+// public 模式下它们看到同一个 sub, 一比对就知道"这是同一个人";
+// pairwise 让每个应用拿到不同的值, 彼此无法关联 —— 即使某个应用的库泄漏,
+// 也推不出该用户在其他应用的身份。
+//
+// # 能力边界 (别误解)
+//
+// 它隔离的是【下游之间】。akasha 运维者仍然能算出任意 (user, client) 的 sub ——
+// 这是逻辑必然: 算不出 sub 的 OP 无法签发 token。
+// 它也【挡不住越权访问】: geass 用户能不能进 atlhyper, 取决于 atlhyper 自己的
+// 准入策略, 换个 sub 该进还是进得去。认证不等于授权。
+//
+// # 为什么用 HMAC 而非 SHA256(salt ‖ 数据)
+//
+// salt 在这里的角色是密钥而非数据 —— 没有它就不能伪造出合法 sub。HMAC 是密钥
+// 场景的标准构造 (顺带免疫长度扩展攻击)。\x00 作分隔符: client_id 与 internal_id
+// 都不含它, 避免拼接歧义。
+//
+// ⚠️ salt 一旦更换或丢失, 全体下游的用户关联立即永久失效且无法重算。
+func PairwiseSub(clientID, internalID, salt string) string {
+	mac := hmac.New(sha256.New, []byte(salt))
+	mac.Write([]byte(clientID + "\x00" + internalID))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func cloneClaims(src jwt.MapClaims) jwt.MapClaims {

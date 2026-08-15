@@ -25,6 +25,14 @@ type Config struct {
 	// ---- 签名 ----
 	SigningKeyPath string `env:"AKASHA_SIGNING_KEY_PATH" envDefault:"./signing-key.pem"` // RSA 私钥 PEM (永不入库/入 git)
 
+	// PairwiseSalt pairwise sub 计算的密钥 (HMAC key)。
+	//
+	// 无默认值且 required —— 它比 RSA 私钥更不能丢:
+	// 私钥丢了重签一把即可 (旧 token 自然过期); 这个盐丢了, 所有下游算出的 sub 全变,
+	// 每个应用里的用户关联【永久失效且无法重算】, 只能让全体用户重新绑定。
+	// 生成: openssl rand -hex 32
+	PairwiseSalt string `env:"AKASHA_PAIRWISE_SALT,required"`
+
 	// ---- 会话 cookie ----
 	// 生产必须 true: false 时 cookie 允许走明文 HTTP, 中枢会话可被中间人窃取 = SSO 全线失守。
 	CookieSecure bool `env:"AKASHA_COOKIE_SECURE" envDefault:"false"`

@@ -94,7 +94,7 @@ func main() {
 
 	// op: 协议核心。issuer 是写进每张 JWT 的 iss (协议层身份, 定了不改);
 	// 四个 TTL 决定 code/token/会话的生命周期。
-	opSvc := op.NewService(op.NewRepository(db), km, accountRepo, cfg.Issuer, op.TTLConfig{
+	opSvc := op.NewService(op.NewRepository(db), km, accountRepo, cfg.Issuer, cfg.PairwiseSalt, op.TTLConfig{
 		IDToken:     cfg.IDTokenTTL,
 		AccessToken: cfg.AccessTokenTTL,
 		Refresh:     cfg.RefreshTTL,

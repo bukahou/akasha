@@ -31,9 +31,9 @@ func (r *Repository) GetUserByLoginName(ctx context.Context, loginName string) (
 	return r.firstUser(ctx, "username = ? OR email = ?", loginName, loginName)
 }
 
-func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	return r.firstUser(ctx, "email = ?", email)
-}
+// 这里【故意没有】GetUserByEmail —— 2026-08-15 定案不做邮箱认亲后它失去了唯一用途。
+// 不留作"以后可能有用": 一个现成的按邮箱查用户的方法, 就是在给恢复邮箱认亲留门。
+// email 在本表是参考信息, 不是身份键。
 
 func (r *Repository) ExistsUsername(ctx context.Context, username string) (bool, error) {
 	var n int64
@@ -41,8 +41,12 @@ func (r *Repository) ExistsUsername(ctx context.Context, username string) (bool,
 	return n > 0, err
 }
 
-// InsertUser 建号; email 为空串时 Omit 该列 → DB 默认 NULL
-// (uk_email 唯一索引只豁免 NULL 不豁免空串, 两个无邮箱用户都存空串会撞索引)。
+// InsertUser 建号; email 为空串时 Omit 该列 → DB 默认 NULL。
+//
+// email 的唯一索引已随"不认亲"定案去除 (同一个人的 Google 账号与 GitHub 账号是两个
+// 独立账号但邮箱相同, 有唯一索引则第二个上游登录必然插入失败)。
+// 仍然做空串→NULL 转换: 语义上"没有邮箱"就该是 NULL 而不是空串, 且 Go 的 string
+// 零值是空串不是 NULL, 不显式 Omit 就会写进一堆无意义的空字符串。
 func (r *Repository) InsertUser(ctx context.Context, u *User) error {
 	tx := r.db.WithContext(ctx)
 	if u.Email == "" {

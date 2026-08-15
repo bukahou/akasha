@@ -5,11 +5,17 @@ CREATE DATABASE IF NOT EXISTS akasha DEFAULT CHARACTER SET utf8mb4;
 USE akasha;
 
 -- 用户库 = 身份权威
+--
+-- id 是【表内主键, 永不对外暴露】。对下游的身份标识是 pairwise sub,
+-- 由 internal_id 现算: HMAC-SHA256(salt, client_id \x00 internal_id)。
+-- 曾经直接拿 id 当 sub, 那会在 akasha 重建后 AUTO_INCREMENT 归 1 时【串号】
+-- (A 用户登入 B 用户的账号), 且违反 OIDC Core §2 的 never-reassigned 要求。
 CREATE TABLE IF NOT EXISTS users (
-  id             BIGINT AUTO_INCREMENT PRIMARY KEY,
-  username       VARCHAR(64)  NOT NULL COMMENT '登录名(密码门的键), 联邦建号时自动生成',
-  password       VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'bcrypt; 联邦建号存空串(守卫拦密码登录)',
-  email          VARCHAR(255) NULL     COMMENT '可空(上游可能不给); 空时 repository Omit 落 NULL',
+  id             BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '仅表内主键, 永不对外暴露',
+  internal_id    CHAR(64)     NOT NULL COMMENT 'SHA256(provider \\0 upstream_subject); pairwise sub 的输入, 永不外泄',
+  username       VARCHAR(64)  NOT NULL COMMENT '登录名, 联邦建号时自动生成',
+  password       VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'bcrypt; 无密码定案后恒为空串, 待移除',
+  email          VARCHAR(255) NULL     COMMENT '参考信息, 非身份键; 空时 repository Omit 落 NULL',
   email_verified TINYINT(1)   NOT NULL DEFAULT 0,
   name           VARCHAR(128) NOT NULL DEFAULT '' COMMENT '展示名, 不唯一',
   avatar_url     VARCHAR(500) NOT NULL DEFAULT '',
@@ -17,8 +23,11 @@ CREATE TABLE IF NOT EXISTS users (
   created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_username (username),
-  UNIQUE KEY uk_email (email)
-) COMMENT '身份权威; 下游应用各自的 users 是业务档案, 以本表 id 为 sub';
+  UNIQUE KEY uk_internal_id (internal_id),
+  KEY idx_email (email)
+  -- email 【故意不设唯一索引】: 不认亲定案后, 同一个人的 Google 账号与 GitHub 账号
+  -- 是两个独立账号但邮箱相同, 唯一索引会让第二个上游登录时插入失败。
+) COMMENT '身份权威; 下游各自的 users 是业务档案, 以本表派生的 pairwise sub 关联';
 
 -- 上游联邦身份 (akasha 当 RP 时的认亲映射)
 CREATE TABLE IF NOT EXISTS federated_identities (

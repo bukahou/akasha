@@ -4,6 +4,8 @@ package account
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -64,9 +66,21 @@ func (s *Service) VerifyPassword(ctx context.Context, loginName, plain string) (
 	return u, nil
 }
 
-// ResolveUpstreamIdentity 统一认亲流程 (所有 provider 无分支):
-// ①查 (provider,sub) 命中即取用户 → ②未命中且有已验证邮箱则按邮箱认亲
-// → ③认不到自动建号 → ④建 identity 行。
+// ResolveUpstreamIdentity 上游身份 → akasha 账号 (所有 provider 无分支):
+// ①查 (provider,subject) 命中即取用户 → ②未命中直接建号 → ③建 identity 行。
+//
+// # 为什么不做邮箱认亲 (2026-08-15 定案)
+//
+// 曾有一步"未命中但邮箱已验证 → 认亲到已有账号"。已删除, 因为它把安全责任
+// 委托给了上游: 接 N 个 provider 时, 只要【其中一个】的邮箱验证有漏洞,
+// 攻击者就能在那儿注册并填入受害者邮箱, 一登录即接管受害者账号
+// (Sign-in-with-X 账号接管)。
+//
+// 现在的规则是硬的: **一个上游身份 = 一个 akasha 账号**, 永远一对一。
+// 同一个人的 Google 账号与 GitHub 账号是两个互不相通的账号。
+// 要合并只能靠用户主动绑定 (先证明自己是谁, 再关联), 不能靠系统猜。
+//
+// 副产品: 流程从四步缩到三步, 且再无"该认哪个账号"的判断分支。
 func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdentity) (*User, error) {
 	// ① 老门客: 身份已关联
 	if fi, err := s.repo.GetIdentity(ctx, id.Provider, id.Subject); err != nil {
@@ -85,46 +99,31 @@ func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdenti
 		return u, nil
 	}
 
-	// ② 认亲: 只信上游已验证的邮箱
-	var user *User
-	if id.Email != "" && id.EmailVerified {
-		u, err := s.repo.GetUserByEmail(ctx, id.Email)
-		if err != nil {
-			return nil, err
-		}
-		user = u
+	// ② 新面孔一律建号 (不查已有账号, 不认亲)
+	username, err := s.generateUsername(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-
-	// ③ 自动建号
-	if user == nil {
-		username, err := s.generateUsername(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		name := id.Name
-		if name == "" {
-			name = username
-		}
-		user = &User{
-			Username:      username,
-			Password:      "", // 联邦账号无密码, VerifyPassword 有守卫
-			Email:         id.Email,
-			EmailVerified: id.EmailVerified,
-			Name:          name,
-			AvatarURL:     id.AvatarURL,
-			Status:        StatusActive,
-		}
-		if err := s.repo.InsertUser(ctx, user); err != nil {
-			return nil, fmt.Errorf("联邦自动建号失败: %w", err)
-		}
-		slog.Info("联邦自动建号", "provider", id.Provider, "user_id", user.ID, "username", username)
+	name := id.Name
+	if name == "" {
+		name = username
 	}
-
-	if user.Status == StatusBanned {
-		return nil, ErrUserBanned
+	user := &User{
+		InternalID:    DeriveInternalID(id.Provider, id.Subject),
+		Username:      username,
+		Password:      "", // 联邦账号无密码, VerifyPassword 有守卫
+		Email:         id.Email,
+		EmailVerified: id.EmailVerified,
+		Name:          name,
+		AvatarURL:     id.AvatarURL,
+		Status:        StatusActive,
 	}
+	if err := s.repo.InsertUser(ctx, user); err != nil {
+		return nil, fmt.Errorf("联邦建号失败: %w", err)
+	}
+	slog.Info("联邦建号", "provider", id.Provider, "user_id", user.ID, "username", username)
 
-	// ④ 建关联: 之后永远走 ①
+	// ③ 建关联: 之后永远走 ①
 	fi := &FederatedIdentity{
 		UserID:   user.ID,
 		Provider: id.Provider,
@@ -135,6 +134,23 @@ func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdenti
 		return nil, fmt.Errorf("建身份关联失败: %w", err)
 	}
 	return user, nil
+}
+
+// DeriveInternalID 由上游身份派生内部稳定标识。
+//
+// 用派生而非随机 UUID, 是为了让 akasha 从零重建后仍能自动恢复:
+// 同一个上游账号重新登录 → 算出同一个 internal_id → 各下游的 pairwise sub 不变
+// → 用户无感地认回原有档案。随机 UUID 做不到这点 (重建即失联, 需逐个应用手动重绑)。
+//
+// \x00 作分隔符: provider 与 subject 都是可打印字符, 不可能含它,
+// 因此 ("goog","le:1") 与 ("google",":1") 这类拼接歧义不会发生。
+//
+// ⚠️ 前提是上游 subject 稳定。Google / GitHub 是 public 类型 (同一账号对任何 client
+// 都给同一个 subject) ✅; Apple 是 pairwise, 换 client_id 就变 —— 将来接 Apple 时
+// 那条上游会丧失重建恢复能力 (其他上游不受影响)。
+func DeriveInternalID(provider, upstreamSubject string) string {
+	sum := sha256.Sum256([]byte(provider + "\x00" + upstreamSubject))
+	return hex.EncodeToString(sum[:])
 }
 
 // generateUsername 基名(邮箱前缀/上游名) → 清洗 → 冲突加 4 位随机后缀, 重试 3 次。
