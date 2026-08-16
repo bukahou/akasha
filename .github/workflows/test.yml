@@ -70,8 +70,15 @@ jobs:
 
       - name: 历史中不得出现私钥内容
         run: |
-          if git log -p --all | grep -q "BEGIN.*PRIVATE KEY"; then
-            echo "git 历史中发现私钥内容 —— 需轮换该密钥并重写历史"; exit 1
+          # 两处刻意的写法:
+          # ① 排除本目录 —— 否则这条规则的模式字符串会匹配到它自己
+          #    (首次运行就是这么失败的: 规则把自身也纳入了检查范围)
+          # ② 匹配完整的 PEM 分隔符而非 "BEGIN.*PRIVATE", 既更精确
+          #    (真实私钥一定带 -----), 也不会被讨论私钥的注释文字误伤
+          if git log -p --all -- ':(exclude).github/workflows' \
+             | grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+            echo "git 历史中发现私钥内容 —— 需轮换该密钥并重写历史"
+            exit 1
           fi
           echo "✅ 历史中无私钥"
 
