@@ -1,4 +1,8 @@
-// account 身份权威的业务规则: 密码验证 / 上游认亲+自动建号 / username 生成。
+// account 身份权威的业务规则: 上游身份裁决 / 建号 / username 生成。
+//
+// 本包【没有】密码验证 —— akasha 不做本地密码认证 (2026-08-09 定案),
+// 认证入口只有上游联邦。接入的应用各自保留自己的本地账号体系,
+// akasha 是它们登录页上的一个额外按钮, 不是唯一入口。
 package account
 
 import (
@@ -12,15 +16,9 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
-
-	"github.com/bukahou/akasha/internal/account/password"
 )
 
-var (
-	ErrInvalidCredentials = errors.New("用户名或密码错误")
-	ErrPasswordLoginOff   = errors.New("此账号未设置密码, 请使用第三方登录")
-	ErrUserBanned         = errors.New("账号已封禁")
-)
+var ErrUserBanned = errors.New("账号已封禁")
 
 // UpstreamIdentity 上游 IdP 验证后的身份断言 (federation 包产出, 本包消费)。
 type UpstreamIdentity struct {
@@ -39,31 +37,6 @@ type Service struct {
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
-}
-
-// VerifyPassword 密码登录: loginName (username 或 email) + 明文密码 → 用户。
-func (s *Service) VerifyPassword(ctx context.Context, loginName, plain string) (*User, error) {
-	u, err := s.repo.GetUserByLoginName(ctx, loginName)
-	if err != nil {
-		return nil, err
-	}
-	if u == nil {
-		return nil, ErrInvalidCredentials
-	}
-	// 联邦建号的账号 password 为空串: 明确指路而不是报"密码错误"
-	if u.Password == "" {
-		return nil, ErrPasswordLoginOff
-	}
-	if err := password.Verify(plain, u.Password); err != nil {
-		if errors.Is(err, password.ErrMismatch) {
-			return nil, ErrInvalidCredentials
-		}
-		return nil, err
-	}
-	if u.Status == StatusBanned {
-		return nil, ErrUserBanned
-	}
-	return u, nil
 }
 
 // ResolveUpstreamIdentity 上游身份 → akasha 账号 (所有 provider 无分支):
@@ -111,7 +84,6 @@ func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdenti
 	user := &User{
 		InternalID:    DeriveInternalID(id.Provider, id.Subject),
 		Username:      username,
-		Password:      "", // 联邦账号无密码, VerifyPassword 有守卫
 		Email:         id.Email,
 		EmailVerified: id.EmailVerified,
 		Name:          name,

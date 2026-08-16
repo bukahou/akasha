@@ -13,27 +13,54 @@
 //	⑥ 路由: 各 feature 自治 Register(mux)
 //	⑦ 运行: 阻塞直到信号, 10s 优雅关停
 //
+// # 无状态设计 (2026-08-16 定案)
+//
+// akasha 【不保留任何登录态】—— 没有 sessions 表, 没有登录 cookie, 没有登出。
+// 每一次 /authorize 都意味着重新走一遍上游认证。
+//
+// 放弃的是 SSO (从 geass 登录后进 atlhyper 不会免登录); 换来的是: 应用之间
+// 彻底无关联 (与 pairwise sub 的隔离立场一致)、用户随时能换上游账号 (中枢会话
+// 会把人静默钉死在第一次登录的账号上)、以及一个真正无状态的服务。
+// 体验损失有限 —— 上游自己有会话, 重走一遍通常只是几百毫秒的静默重定向。
+//
 // # 依赖方向 (架构红线, 不允许反向)
 //
-//	op    → keys / client / session / account   (协议层调所有下层)
-//	login → session / account                   (柜台页只碰会话与用户)
-//	account → 无                                (身份权威在最底层, 不知道任何人)
+//	op         → keys / client / account   (协议层调所有下层)
+//	federation → account                   (上游 broker)
+//	login      → op                        (⚠️ 计划外, 为复用 SafeLocalNext)
+//	account    → 无                        (身份权威在最底层, 不知道任何人)
+//
+// op 与 federation 是同一套 OIDC 概念的镜像两侧: op 发 code 给下游 (akasha 当
+// Provider), federation 拿 code 找上游换 (akasha 当 Relying Party), 中间同为
+// account 裁决身份。两者的衔接靠 main 注入 op.CompleteAuthorize, 而非直接依赖。
+//
+// # 一次登录的完整路径
+//
+//	下游 → /authorize (校验后停车, 原请求塞进 next)
+//	     → /login?next=... (选上游)
+//	     → /federation/{p}/start (state/nonce 进签名 cookie) → 上游
+//	     → /federation/{p}/callback (验 state → 换身份 → 裁决账号)
+//	     → op.CompleteAuthorize (就地签 code, 不回跳 /authorize —— 无会话下会死循环)
+//	     → 302 回下游 redirect_uri?code=...
 //
 // # 路由表 (这个进程对外的全部表面)
 //
 //	op 包 (协议, 机器读):
 //	  GET  /.well-known/openid-configuration  发现文档 (RP 自动配置的入口)
 //	  GET  /jwks                              公钥集 (下游验签的数据源)
-//	  GET  /authorize                         前信道: 有会话发 code, 无会话去登录页
+//	  GET  /authorize                         前信道: 校验后一律送去登录页
 //	  POST /token                             后信道: code/refresh → 三 token
 //	  GET  /health                            存活探针
 //	login 包 (柜台, 人读):
-//	  GET  /login    展示登录页
-//	  POST /login    验密码 → 建中枢会话 (SSO cookie) → 回跳 authorize
-//	  POST /logout   吊销会话
+//	  GET  /       说明页 (这是中枢, 请从应用发起登录)
+//	  GET  /login  上游登录入口 (无密码表单, 无注册, 无登出)
+//	federation 包 (上游往返):
+//	  GET  /federation/{provider}/start     生成 state/nonce → 跳去上游
+//	  GET  /federation/{provider}/callback  验 state → 换身份 → 交给 op 签 code
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -41,11 +68,11 @@ import (
 	"github.com/bukahou/akasha/internal/account"
 	"github.com/bukahou/akasha/internal/client"
 	"github.com/bukahou/akasha/internal/config"
+	"github.com/bukahou/akasha/internal/federation"
 	"github.com/bukahou/akasha/internal/keys"
 	"github.com/bukahou/akasha/internal/login"
 	"github.com/bukahou/akasha/internal/op"
 	"github.com/bukahou/akasha/internal/server"
-	"github.com/bukahou/akasha/internal/session"
 	"github.com/bukahou/akasha/internal/storage"
 )
 
@@ -88,10 +115,6 @@ func main() {
 	// client: RP 注册表。谁能来要身份、能回跳到哪, 由它说了算 (开放重定向的唯一防线)。
 	clientReg := client.NewRegistry(db)
 
-	// session: 中枢会话 = SSO 的物理载体。cookie 种在 akasha 域下,
-	// 之后任何应用跳来 /authorize 都能命中 → 免登录。
-	sessionStore := session.NewStore(db, cfg.SessionTTL, cfg.CookieSecure)
-
 	// op: 协议核心。issuer 是写进每张 JWT 的 iss (协议层身份, 定了不改);
 	// 四个 TTL 决定 code/token/会话的生命周期。
 	opSvc := op.NewService(op.NewRepository(db), km, accountRepo, cfg.Issuer, cfg.PairwiseSalt, op.TTLConfig{
@@ -101,22 +124,48 @@ func main() {
 		AuthCode:    cfg.AuthCodeTTL,
 	})
 
+	// federation: 上游 broker (akasha 当 RP 的那一侧, 与 op 镜像)。
+	// 构造 Google provider 时会拉取其 discovery 文档 — 网络请求失败即退出:
+	// 无密码定案后联邦是唯一认证入口, "能启动但登不进去"比起不来更糟。
+	googleProvider, err := federation.NewGoogleProvider(context.Background(),
+		cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.Issuer+"/federation/google/callback")
+	if err != nil {
+		slog.Error("初始化 Google 上游失败", "err", err)
+		os.Exit(1)
+	}
+	providerRegistry := federation.NewRegistry(googleProvider)
+	// 联邦往返状态用签名 cookie 保管, 密钥由 pairwise salt 派生 (不新增配置项)
+	stateKeeper, err := federation.NewStateKeeper(cfg.PairwiseSalt, cfg.FederationTTL, cfg.CookieSecure)
+	if err != nil {
+		slog.Error("初始化联邦状态保管失败", "err", err)
+		os.Exit(1)
+	}
+
 	// handler 层: 只做 HTTP 编解码 + 调 service, 不含业务判断
-	opHandler := op.NewHandler(opSvc, clientReg, sessionStore, km, cfg.Issuer)
+	opHandler := op.NewHandler(opSvc, clientReg, km, cfg.Issuer)
 	// login 的构造会解析 embed 模板 — 模板语法错误在启动时暴露, 而不是等用户点登录才 500
-	loginHandler, err := login.NewHandler(accountSvc, sessionStore)
+	loginHandler, err := login.NewHandler(providerRegistry.Names())
 	if err != nil {
 		slog.Error("初始化登录页失败", "err", err)
 		os.Exit(1)
 	}
+	// safeNext 由 main 注入, 让 federation 不必依赖 op (login 包为此直接 import 了 op,
+	// 造成计划外的依赖方向; 这里用函数注入避开)
+	fedHandler := federation.NewHandler(providerRegistry, accountSvc, stateKeeper, opHandler.CompleteAuthorize, op.SafeLocalNext)
 
 	// ⑥ 路由 — 各 feature 自治注册自己的端点 (加端点只改对应包, main 不动)
 	mux := http.NewServeMux()
 	opHandler.Register(mux)
 	loginHandler.Register(mux)
+	fedHandler.Register(mux)
+
+	// 全局 middleware: 安全头 (点击劫持/嗅探/Referer 泄漏防护) + CORS + 请求体上限。
+	// 包在最外层 —— 每一条响应都该带上, 包括 404 与各类错误页。
+	// CORS 只对不依赖 cookie 的端点放行 (见 server.corsAllowedPaths)。
+	handler := server.SecurityHeaders(cfg.Issuer, server.CORS(server.LimitBody(mux)))
 
 	// ⑦ 运行 — 阻塞直到 SIGINT/SIGTERM, 然后 10s 窗口优雅关停 (让在途的 token 兑换跑完)
-	if err := server.Run(cfg.Addr, mux); err != nil {
+	if err := server.Run(cfg.Addr, handler); err != nil {
 		slog.Error("服务退出", "err", err)
 		os.Exit(1)
 	}

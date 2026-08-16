@@ -16,8 +16,7 @@ type User struct {
 	// 永不外泄 (泄漏 = 下游可比对出同一个人, pairwise 立即破功)。
 	InternalID    string    `gorm:"column:internal_id"`
 	Username      string    `gorm:"column:username"`
-	Password      string    `gorm:"column:password"` // bcrypt; 联邦建号存空串 (守卫拦密码登录)。⚠️ 无密码定案后待移除
-	Email         string    `gorm:"column:email"`    // 参考信息, 非身份键; 空串时 repository Omit → DB 落 NULL
+	Email         string    `gorm:"column:email"` // 参考信息, 非身份键; 空串时 repository Omit → DB 落 NULL
 	EmailVerified bool      `gorm:"column:email_verified"`
 	Name          string    `gorm:"column:name"`
 	AvatarURL     string    `gorm:"column:avatar_url"`

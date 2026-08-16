@@ -26,11 +26,6 @@ func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*U
 	return r.firstUser(ctx, "username = ?", username)
 }
 
-// GetUserByLoginName 密码登录键: username 或 email 均可 (登录框一个输入框两用)。
-func (r *Repository) GetUserByLoginName(ctx context.Context, loginName string) (*User, error) {
-	return r.firstUser(ctx, "username = ? OR email = ?", loginName, loginName)
-}
-
 // 这里【故意没有】GetUserByEmail —— 2026-08-15 定案不做邮箱认亲后它失去了唯一用途。
 // 不留作"以后可能有用": 一个现成的按邮箱查用户的方法, 就是在给恢复邮箱认亲留门。
 // email 在本表是参考信息, 不是身份键。

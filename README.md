@@ -31,11 +31,12 @@ akasha **不做本地密码认证**——没有注册页，没有找回密码，
 |---|---|---|
 | M1 | discovery / JWKS / authorize / token | ✅ 代码完成 |
 | M1.5 | 运行时验收（完整授权码流程 + 外部验签） | ✅ 通过 |
-| M2 | Google 上游联邦 / userinfo / 移除临时密码登录 | 计划中 |
+| M2 | Google 上游联邦 / 落地页 / 移除临时密码登录 | ✅ 完成 |
 | M3 | 安全加固 + 部署上线 | 计划中 |
 | M4 | GitHub provider / 更多应用接入 | 计划中 |
 
-> 当前的密码登录是 M1 阶段的**临时验收入口**，M2 联邦可用后移除。
+协议两侧已双向打通：既能作为 Provider 给下游签发身份，也能作为 Relying Party
+向上游（Google）换取身份。
 
 ⚠️ **尚未做安全加固**（CSRF token、速率限制、安全响应头等），请勿直接用于生产。
 
@@ -58,7 +59,7 @@ internal/
 ├── session/     中枢会话 — SSO 的载体
 ├── account/     用户库 = 身份权威 (联邦认亲 / 自动建号 / 统一身份编号)
 ├── login/       托管登录页 (服务端渲染, 无前端框架)
-├── federation/  上游 broker (provider 抽象 + 各上游实现)   ← M2
+├── federation/  上游 broker (provider 抽象 + 各上游实现)
 ├── config/      环境变量配置
 └── server/      HTTP 生命周期
 ```
@@ -112,7 +113,8 @@ curl -s localhost:9100/.well-known/openid-configuration | jq
 | `GET /jwks` | 公钥集（下游验签用） |
 | `GET /authorize` | 授权入口（code + PKCE） |
 | `POST /token` | 令牌端点（`authorization_code` / `refresh_token`） |
-| `GET/POST /login`、`POST /logout` | 托管登录页 |
+| `GET /federation/{provider}/start`、`/callback` | 上游联邦往返 |
+| `GET /login`、`POST /logout`、`GET /` | 托管登录页 / 登出 / 落地页 |
 | `GET /health` | 存活探针 |
 
 ## 技术选型

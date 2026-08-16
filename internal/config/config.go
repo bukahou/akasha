@@ -33,6 +33,14 @@ type Config struct {
 	// 生成: openssl rand -hex 32
 	PairwiseSalt string `env:"AKASHA_PAIRWISE_SALT,required"`
 
+	// ---- 上游联邦 (Google) ----
+	// 凭证类, 无默认值。生产忘配时启动即炸, 优于"起来了但没人能登录"。
+	GoogleClientID     string `env:"AKASHA_GOOGLE_CLIENT_ID,required"`
+	GoogleClientSecret string `env:"AKASHA_GOOGLE_CLIENT_SECRET,required"`
+	// FederationTTL 一次联邦往返的有效期 (含用户在上游输密码/过 MFA 的时间)。
+	// 太短会让慢吞吞的用户白跑一趟, 太长则拉大 CSRF 攻击窗口。
+	FederationTTL time.Duration `env:"AKASHA_FEDERATION_TTL" envDefault:"10m"`
+
 	// ---- 会话 cookie ----
 	// 生产必须 true: false 时 cookie 允许走明文 HTTP, 中枢会话可被中间人窃取 = SSO 全线失守。
 	CookieSecure bool `env:"AKASHA_COOKIE_SECURE" envDefault:"false"`
@@ -41,8 +49,9 @@ type Config struct {
 	IDTokenTTL     time.Duration `env:"AKASHA_ID_TOKEN_TTL"     envDefault:"10m"`
 	AccessTokenTTL time.Duration `env:"AKASHA_ACCESS_TOKEN_TTL" envDefault:"1h"`
 	RefreshTTL     time.Duration `env:"AKASHA_REFRESH_TTL"      envDefault:"720h"` // 30d 滚动
-	SessionTTL     time.Duration `env:"AKASHA_SESSION_TTL"      envDefault:"720h"` // 中枢会话 30d
-	AuthCodeTTL    time.Duration `env:"AKASHA_AUTH_CODE_TTL"    envDefault:"60s"`  // 一次性提货券, 短命是安全属性
+	// ※ 没有会话 TTL —— akasha 不保留登录态 (2026-08-16 无会话定案),
+	//   每次 authorize 都重新走一遍上游认证。
+	AuthCodeTTL time.Duration `env:"AKASHA_AUTH_CODE_TTL"    envDefault:"60s"` // 一次性提货券, 短命是安全属性
 }
 
 func LoadConfig() (*Config, error) {
