@@ -1,6 +1,10 @@
-# 私钥永不入库
+# 私钥与凭证材料永不入库
 *.pem
 *.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
 
 # 本地环境 (真实凭证); .env.example 是模板需要入库
 .env

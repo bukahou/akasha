@@ -3,7 +3,7 @@
 -- ※ 【没有 sessions 表】akasha 不保留登录态 (2026-08-16 定案): 每次 authorize
 --   都重新走一遍上游认证。放弃 SSO, 换来应用间彻底无关联、用户随时可换上游账号、
 --   以及一个无状态的服务。联邦往返期间的临时状态存在签名 cookie 里, 不落库。
--- 本地: mysql -u bukahou -p 建库后执行; 生产: TiDB Cloud 库 `akasha` (上线时经审批执行)
+-- 执行: mysql -h <host> -u <user> -p < scripts/schema.sql
 
 CREATE DATABASE IF NOT EXISTS akasha DEFAULT CHARACTER SET utf8mb4;
 USE akasha;
