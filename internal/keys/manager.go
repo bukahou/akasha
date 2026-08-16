@@ -119,6 +119,22 @@ func (m *Manager) SignClaims(claims jwt.MapClaims) (string, error) {
 
 // VerifyToken 验证本 Manager 签发的 JWT (内部自检用; 下游应用走 JWKS 各验各的)。
 func (m *Manager) VerifyToken(tokenStr string) (jwt.MapClaims, error) {
+	return m.parse(tokenStr)
+}
+
+// VerifyTokenIgnoringExpiry 验签但不检查过期。
+//
+// 专供 id_token_hint 使用 (OIDC RP-Initiated Logout §2): 用户点登出时手上那张
+// id_token 往往已经过期 —— 它在这里的作用只是"提示这是谁、来自哪个 client",
+// 不承担授权。因此签名必须验 (否则任何人都能伪造一个 hint 指定登出目标),
+// 但过期必须容忍 (否则正常的登出请求会被拒)。
+//
+// ⚠️ 只能用于识别, 绝不可用于授权判断 —— 一张过期的 token 不代表任何有效权限。
+func (m *Manager) VerifyTokenIgnoringExpiry(tokenStr string) (jwt.MapClaims, error) {
+	return m.parse(tokenStr, jwt.WithoutClaimsValidation())
+}
+
+func (m *Manager) parse(tokenStr string, opts ...jwt.ParserOption) (jwt.MapClaims, error) {
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 		// 算法白名单 —— 防 alg confusion 攻击:
@@ -129,7 +145,7 @@ func (m *Manager) VerifyToken(tokenStr string) (jwt.MapClaims, error) {
 			return nil, fmt.Errorf("非预期的签名算法: %v", t.Header["alg"])
 		}
 		return &m.private.PublicKey, nil
-	})
+	}, opts...)
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AuthCode 对应 auth_codes 表 — 事务①的断点快照。
@@ -163,6 +164,40 @@ func (r *Repository) RevokeFamily(ctx context.Context, familyID string) (int64, 
 		Where("family_id = ? AND revoked = 0", familyID).
 		Update("revoked", true)
 	return res.RowsAffected, res.Error
+}
+
+// PairwiseSubRecord 对应 pairwise_subs 表 —— sub 的反查映射。
+type PairwiseSubRecord struct {
+	ID       int64  `gorm:"column:id;primaryKey"`
+	ClientID string `gorm:"column:client_id"`
+	Sub      string `gorm:"column:sub"`
+	UserID   int64  `gorm:"column:user_id"`
+}
+
+func (PairwiseSubRecord) TableName() string { return "pairwise_subs" }
+
+// RecordPairwiseSub 登记一条 sub → user 映射 (已存在则忽略)。
+//
+// 每次签发 token 时调用。用 INSERT IGNORE 而非"先查后插": 同一用户重复登录会
+// 反复走到这里, 先查后插在并发下会撞唯一索引; 交给数据库幂等处理最省事。
+func (r *Repository) RecordPairwiseSub(ctx context.Context, clientID, sub string, userID int64) error {
+	return r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&PairwiseSubRecord{ClientID: clientID, Sub: sub, UserID: userID}).Error
+}
+
+// LookupPairwiseSub 由 (client_id, sub) 反查 user_id; 查不到返回 0。
+func (r *Repository) LookupPairwiseSub(ctx context.Context, clientID, sub string) (int64, error) {
+	var rec PairwiseSubRecord
+	err := r.db.WithContext(ctx).
+		Where("client_id = ? AND sub = ?", clientID, sub).First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return rec.UserID, nil
 }
 
 func hashOpaque(v string) string {

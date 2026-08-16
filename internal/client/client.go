@@ -31,6 +31,10 @@ type Client struct {
 	SecretHash   string `gorm:"column:secret_hash"`
 	Name         string `gorm:"column:name"`
 	RedirectURIs string `gorm:"column:redirect_uris"` // JSON 数组字符串
+	// PostLogoutRedirectURIs 登出后可回跳的地址, 与 RedirectURIs 分开注册。
+	// 两者语义不同: 一个接收授权码, 一个是给用户看的落地页; 混用会让
+	// "能接收 code 的端点"和"能被登出流程跳到的页面"这两个权限意外等价。
+	PostLogoutRedirectURIs string `gorm:"column:post_logout_redirect_uris"`
 }
 
 func (Client) TableName() string { return "clients" }
@@ -72,12 +76,28 @@ func (r *Registry) FindByClientID(ctx context.Context, clientID string) (*Client
 // 默认精确匹配, 不做前缀或通配。唯一的例外是 loopback (见 loopbackMatches),
 // 那是 RFC 8252 §7.3 的硬性要求而非放松。
 func (r *Registry) ValidateRedirectURI(c *Client, redirectURI string) error {
+	return matchURI(c.RedirectURIs, redirectURI, "redirect_uris")
+}
+
+// ValidatePostLogoutRedirectURI 登出回跳白名单校验。
+//
+// 与授权回调分开校验 —— 它们是两份独立的白名单。一个应用可能有多个授权回调
+// 端点却只有一个登出落地页, 反之亦然; 更重要的是不该让"能接收授权码"顺带
+// 获得"能被登出流程跳到"的能力。
+func (r *Registry) ValidatePostLogoutRedirectURI(c *Client, uri string) error {
+	return matchURI(c.PostLogoutRedirectURIs, uri, "post_logout_redirect_uris")
+}
+
+func matchURI(rawJSON, want, field string) error {
+	if rawJSON == "" {
+		return ErrRedirectURIDenied
+	}
 	var uris []string
-	if err := json.Unmarshal([]byte(c.RedirectURIs), &uris); err != nil {
-		return fmt.Errorf("redirect_uris 配置解析失败: %w", err)
+	if err := json.Unmarshal([]byte(rawJSON), &uris); err != nil {
+		return fmt.Errorf("%s 配置解析失败: %w", field, err)
 	}
 	for _, u := range uris {
-		if u == redirectURI || loopbackMatches(u, redirectURI) {
+		if u == want || loopbackMatches(u, want) {
 			return nil
 		}
 	}

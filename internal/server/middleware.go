@@ -93,11 +93,18 @@ func CORS(next http.Handler) http.Handler {
 }
 
 // corsAllowedPaths 允许跨源访问的端点白名单。
-// 只列不依赖 cookie 的端点 —— 名单之外一律不发 CORS 头。
+//
+// 判据是【这个端点靠什么认证】, 不是"它重不重要":
+//   - 靠请求参数或 Authorization 头认证 → 可以开放跨源, 浏览器不会自动附带这些
+//   - 靠 cookie 认证 → 绝不开放, 那等于让任意站点借用用户的 cookie
+//
+// 所以 /authorize 与 /federation/* 不在名单里 (它们依赖联邦状态 cookie),
+// /end_session 也不需要 —— 它是浏览器顶级导航, 不是 XHR。
 var corsAllowedPaths = map[string]bool{
-	"/token":                            true,
-	"/jwks":                             true,
-	"/.well-known/openid-configuration": true,
+	"/token":                            true, // code + PKCE verifier 认证
+	"/userinfo":                         true, // Authorization: Bearer 认证
+	"/jwks":                             true, // 公开数据
+	"/.well-known/openid-configuration": true, // 公开数据
 }
 
 // maxRequestBody 请求体上限 (64KB)。

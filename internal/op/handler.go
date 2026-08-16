@@ -31,6 +31,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /jwks", h.jwks)
 	mux.HandleFunc("GET /authorize", h.authorize)
 	mux.HandleFunc("POST /token", h.token)
+	// 规范要求至少支持 GET; POST 一并支持 (部分 RP 用表单提交以避免 URL 过长)
+	mux.HandleFunc("GET /end_session", h.endSession)
+	mux.HandleFunc("POST /end_session", h.endSession)
+	mux.HandleFunc("GET /userinfo", h.userinfo)
+	mux.HandleFunc("POST /userinfo", h.userinfo)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -44,6 +49,8 @@ func (h *Handler) discovery(w http.ResponseWriter, r *http.Request) {
 		"authorization_endpoint":   h.issuer + "/authorize",
 		"token_endpoint":           h.issuer + "/token",
 		"jwks_uri":                 h.issuer + "/jwks",
+		"userinfo_endpoint":        h.issuer + "/userinfo",
+		"end_session_endpoint":     h.issuer + "/end_session",
 		"response_types_supported": []string{"code"},
 		"grant_types_supported":    []string{"authorization_code", "refresh_token"},
 		// pairwise: 每个 client 拿到不同的 sub, 下游之间无法比对出"这是同一个人"。

@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS clients (
   secret_hash   VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'bcrypt(client_secret); public 客户端为空串',
   name          VARCHAR(128) NOT NULL COMMENT '展示名(登录页"继续前往 xx")',
   redirect_uris JSON         NOT NULL COMMENT '回调白名单, 精确匹配(loopback 豁免端口)',
+  -- 登出后可回跳的地址, 与 redirect_uris 分开注册 (规范要求, 语义也不同:
+  -- 一个是接收授权码的回调端点, 一个是登出后给用户看的落地页)。
+  -- 同样是开放重定向面 —— 未注册的地址一律不跳。
+  post_logout_redirect_uris JSON NOT NULL COMMENT '登出回跳白名单, 精确匹配',
   created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_client_id (client_id)
 ) COMMENT '下游应用注册表';
@@ -99,6 +103,24 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   KEY idx_family (family_id),
   KEY idx_user_client (user_id, client_id)
 ) COMMENT '30d 滚动刷新; 按 family 连坐撤销';
+
+-- pairwise sub → 用户 的反查映射
+--
+-- 为什么需要这张表: sub = HMAC(salt, client_id \0 internal_id) 是【单向】的,
+-- /userinfo 拿到 (aud, sub) 无法反推出用户。而 access_token 里【不能】放内部
+-- 标识 —— 放了下游一比对就知道是同一个人, pairwise 立刻破功。
+--
+-- 于是只能把这个映射记在服务端。行数 = 用户数 × 该用户实际登录过的应用数,
+-- 极小; 且它是长期映射不是临时凭证, 无需过期清理。
+CREATE TABLE IF NOT EXISTS pairwise_subs (
+  id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+  client_id  VARCHAR(64) NOT NULL,
+  sub        CHAR(64)    NOT NULL COMMENT 'HMAC(salt, client_id \\0 internal_id)',
+  user_id    BIGINT      NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_client_sub (client_id, sub),
+  KEY idx_user (user_id)
+) COMMENT 'pairwise sub 反查表 (userinfo 用)';
 
 -- 签名公钥历史 (私钥永不入库; 旧公钥留到旧 token 全过期才 retire)
 CREATE TABLE IF NOT EXISTS signing_keys (

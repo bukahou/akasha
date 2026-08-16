@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -141,11 +142,18 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 	}
 
 	now := time.Now()
+	sub := PairwiseSub(clientID, u.InternalID, s.pairwiseSalt)
+	// 登记反查映射: sub 是单向哈希, /userinfo 拿到它无法反推用户。
+	// 失败不阻断签发 —— 登录比 userinfo 重要, 下次签发会再补一次。
+	if err := s.repo.RecordPairwiseSub(ctx, clientID, sub, u.ID); err != nil {
+		slog.Error("登记 pairwise 映射失败, userinfo 将无法反查", "err", err, "client_id", clientID)
+	}
+
 	// ⚠️ 这里【绝不能】出现 u.ID 或 u.InternalID —— 下游一旦拿到跨 client 相同的标识,
 	// pairwise 立刻破功 (两个应用一比对就知道是同一个人)。sub 是唯一的身份标识。
 	base := jwt.MapClaims{
 		"iss":                s.issuer,
-		"sub":                PairwiseSub(clientID, u.InternalID, s.pairwiseSalt),
+		"sub":                sub,
 		"aud":                clientID,
 		"iat":                now.Unix(),
 		"email":              u.Email,
@@ -202,6 +210,17 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 		TokenType:    "Bearer",
 		ExpiresIn:    int64(s.ttl.AccessToken.Seconds()),
 	}, nil
+}
+
+// LookupUserBySub 由 (client_id, pairwise sub) 反查用户 id; 查不到返回 0。
+func (s *Service) LookupUserBySub(ctx context.Context, clientID, sub string) (int64, error) {
+	return s.repo.LookupPairwiseSub(ctx, clientID, sub)
+}
+
+// UserClaims 取用户当前属性 (userinfo 用)。
+// 与 id_token 不同, 这里读的是【实时】状态 —— 封禁与资料变更都会立即反映。
+func (s *Service) UserClaims(ctx context.Context, userID int64) (*account.User, error) {
+	return s.account.GetUserByID(ctx, userID)
 }
 
 // PairwiseSub 计算面向某个 client 的 sub (OIDC Core §8 pairwise)。
