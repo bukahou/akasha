@@ -81,17 +81,24 @@ CREATE TABLE IF NOT EXISTS auth_codes (
 ) COMMENT '事务①的断点快照 (停车场)';
 
 -- refresh token (不透明随机串, 表里存 SHA-256)
+--
+-- family_id = 签发这条链的原始 auth_code 的 code_hash。
+-- 一次 authorize 产生的 code 换出 refresh₁, 滚动出 refresh₂、refresh₃…… 这整条链
+-- 共享同一个 family_id。RFC 6819 §5.2.1.1 要求: 检测到重放时【整个家族一起撤销】——
+-- 重放本身就是泄漏信号, 只拒绝这一次等于放任攻击者继续用他手上那套新 token。
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id         BIGINT AUTO_INCREMENT PRIMARY KEY,
   token_hash CHAR(64)    NOT NULL,
+  family_id  CHAR(64)    NOT NULL COMMENT '令牌家族 = 原始 auth_code 的 code_hash',
   user_id    BIGINT      NOT NULL,
   client_id  VARCHAR(64) NOT NULL,
   expires_at DATETIME    NOT NULL,
   revoked    TINYINT(1)  NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_token_hash (token_hash),
+  KEY idx_family (family_id),
   KEY idx_user_client (user_id, client_id)
-) COMMENT '30d 滚动刷新';
+) COMMENT '30d 滚动刷新; 按 family 连坐撤销';
 
 -- 签名公钥历史 (私钥永不入库; 旧公钥留到旧 token 全过期才 retire)
 CREATE TABLE IF NOT EXISTS signing_keys (

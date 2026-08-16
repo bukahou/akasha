@@ -52,9 +52,25 @@ func (h *Handler) discovery(w http.ResponseWriter, r *http.Request) {
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "email", "profile"},
 		"code_challenge_methods_supported":      []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
+		"response_modes_supported":              []string{"query"},
+		// 声明 none 是有意义的: 它告诉 RP "静默认证这条路存在但会失败",
+		// RP 据此知道该拿到 login_required 而不是超时
+		"prompt_values_supported": []string{"none", "login", "select_account"},
+		// claims_supported 让 RP 知道能拿到哪些字段, 不必靠试
+		"claims_supported": []string{
+			"iss", "sub", "aud", "exp", "iat", "auth_time", "azp", "at_hash", "nonce",
+			"email", "email_verified", "name", "preferred_username",
+		},
 	})
 }
+
+// jwksMaxAge 公钥集的缓存时长。
+//
+// 不发缓存头时 RP 每次验签都可能回源, akasha 就成了验签路径上的实时依赖。
+// 1 小时是主流 OP 的量级 (Google 同级)。轮换安全性不受影响: 新旧公钥并存于
+// JWKS 中, 旧 token 在自然过期前始终验得过, 缓存过期后新公钥自然被取到。
+const jwksMaxAge = 3600
 
 func (h *Handler) jwks(w http.ResponseWriter, r *http.Request) {
 	set, err := h.km.JWKS(r.Context())
@@ -63,6 +79,7 @@ func (h *Handler) jwks(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "server_error"})
 		return
 	}
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", jwksMaxAge))
 	writeJSON(w, http.StatusOK, set)
 }
 
@@ -82,15 +99,59 @@ func (h *Handler) jwks(w http.ResponseWriter, r *http.Request) {
 // 实际体验损失有限: 上游 (Google) 自己有会话, 重新走一遍通常只是几百毫秒的
 // 静默重定向, 不需要重新输密码。
 func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.validateAuthorizeRequest(r.Context(), r.URL.Query()); err != nil {
-		// 请求不合法时不能盲目 302 回 redirect_uri (它本身可能就是伪造的), 直接展示错误
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	req, err := h.validateAuthorizeRequest(r.Context(), r.URL.Query())
+	if err != nil {
+		h.failAuthorize(w, r, r.URL.Query(), err)
 		return
 	}
+
+	// prompt=none 要求"绝不与用户交互"。akasha 不保留登录态, 静默认证永远无法满足 ——
+	// 但必须按规范回 error=login_required 给 RP, 而不是把登录页显示出来:
+	// SPA 常用隐藏 iframe + prompt=none 探测登录态, 显示登录页会让探测永远无结论。
+	if req.RequiresSilentAuth() {
+		ae := &AuthorizeError{Code: ErrCodeLoginRequired, Desc: "需要用户交互完成认证 (本服务不保留登录态)"}
+		if err := RedirectWithError(w, r, req.RedirectURI, ae, req.State); err != nil {
+			slog.Error("回投 authorize 错误失败", "err", err, "client_id", req.ClientID)
+			http.Error(w, "服务器内部错误", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	// 停车: 原始请求整体作为 next 穿过登录页与上游往返, 认证完成后由
 	// CompleteAuthorize 就地续跑 (不再回跳本端点 —— 无会话下那会死循环)
 	next := url.QueryEscape("/authorize?" + r.URL.RawQuery)
 	http.Redirect(w, r, "/login?next="+next, http.StatusFound)
+}
+
+// failAuthorize 决定一个 authorize 错误是【回投给 RP】还是【直接显示】。
+//
+// 这个判断本身就是防开放重定向的关键: 只有当 client 确实存在、且 redirect_uri
+// 确实在它的白名单里时, 才可以往那个地址跳。否则任何人都能构造一个指向自己
+// 站点的 redirect_uri, 让 akasha 把用户送过去, 而地址栏全程显示可信域名。
+//
+// 所以次序是固定的: 先独立地把 client 与 redirect_uri 验一遍, 通过了才回投;
+// 没通过就只能在本站显示 —— 那时我们无法确认目标地址属于谁。
+func (h *Handler) failAuthorize(w http.ResponseWriter, r *http.Request, q url.Values, err error) {
+	var ae *AuthorizeError
+	if !errors.As(err, &ae) {
+		ae = &AuthorizeError{Code: ErrCodeServerError, Desc: err.Error()}
+	}
+
+	clientID, redirectURI := q.Get("client_id"), q.Get("redirect_uri")
+	if clientID != "" && redirectURI != "" {
+		if c, cerr := h.clients.FindByClientID(r.Context(), clientID); cerr == nil {
+			if h.clients.ValidateRedirectURI(c, redirectURI) == nil {
+				// 目标可信, 按规范回投
+				if rerr := RedirectWithError(w, r, redirectURI, ae, q.Get("state")); rerr == nil {
+					slog.Info("回投 authorize 错误", "error", ae.Code, "client_id", clientID)
+					return
+				}
+			}
+		}
+	}
+	// 目标不可信或不可用 —— 只能在本站显示
+	slog.Warn("authorize 请求不合法且无法回投", "error", ae.Code, "desc", ae.Desc)
+	http.Error(w, "authorize 请求不合法: "+ae.Desc, http.StatusBadRequest)
 }
 
 // CompleteAuthorize 用刚认证到的身份完成一次停车的 authorize 事务: 签 code 并回跳 RP。
@@ -110,8 +171,9 @@ func (h *Handler) CompleteAuthorize(w http.ResponseWriter, r *http.Request, next
 	}
 	req, err := h.validateAuthorizeRequest(r.Context(), u.Query())
 	if err != nil {
+		// 停车期间 client 被删或白名单变了 —— 此时用户已完成认证, 回投比白页友好
 		slog.Warn("停车的 authorize 请求已失效", "err", err)
-		http.Redirect(w, r, "/login?error=internal", http.StatusFound)
+		h.failAuthorize(w, r, u.Query(), err)
 		return
 	}
 
@@ -135,14 +197,15 @@ func (h *Handler) CompleteAuthorize(w http.ResponseWriter, r *http.Request, next
 func (h *Handler) validateAuthorizeRequest(ctx context.Context, q url.Values) (*AuthorizeRequest, error) {
 	req, err := ParseAuthorizeRequest(q)
 	if err != nil {
-		return nil, fmt.Errorf("authorize 请求不合法: %w", err)
+		return nil, err
 	}
 	c, err := h.clients.FindByClientID(ctx, req.ClientID)
 	if err != nil {
-		return nil, errors.New("client 未注册")
+		// client 都不存在, 更谈不上信任它给的 redirect_uri —— 这个错误注定无法回投
+		return nil, authErr(ErrCodeUnauthorizedClient, "client 未注册")
 	}
 	if err := h.clients.ValidateRedirectURI(c, req.RedirectURI); err != nil {
-		return nil, errors.New("redirect_uri 不在白名单")
+		return nil, authErr(ErrCodeInvalidRequest, "redirect_uri 不在白名单")
 	}
 	return req, nil
 }
@@ -185,6 +248,12 @@ func (h *Handler) token(w http.ResponseWriter, r *http.Request) {
 		// 只有真正的服务端故障才配 500 —— 分错了会让 RP 把"用户被封禁"当成
 		// akasha 宕机去重试, 而不是引导用户重新登录。
 		switch {
+		// 重放已在 repository 层触发连坐撤销并记了安全事件日志。
+		// 对外仍回统一的 invalid_grant, 不透露"我们识别出了重放"——
+		// 那等于给攻击者反馈, 帮他判断哪张票是真的。
+		case errors.Is(err, ErrCodeReplayed), errors.Is(err, ErrRefreshReplayed):
+			writeTokenError(w, http.StatusBadRequest, "invalid_grant", "凭证无效")
+			return
 		case errors.Is(err, ErrCodeInvalid), errors.Is(err, ErrRefreshInvalid),
 			errors.Is(err, ErrPKCEMismatch), errors.Is(err, ErrPKCEMalformed),
 			errors.Is(err, ErrUserUnavailable):

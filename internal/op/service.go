@@ -104,7 +104,8 @@ func (s *Service) ExchangeCode(ctx context.Context, clientID, code, verifier, re
 	if computeS256(verifier) != ac.PKCEChallenge {
 		return nil, ErrPKCEMismatch
 	}
-	return s.issueTokens(ctx, ac.UserID, ac.ClientID, ac.Nonce)
+	// 家族起点: 这张 code 的 hash。之后每次滚动都继承它, 使整条链可被连坐撤销
+	return s.issueTokens(ctx, ac.UserID, ac.ClientID, ac.Nonce, ac.CodeHash)
 }
 
 // RefreshTokens 滚动刷新 (旧 refresh 作废, 全套新发)。
@@ -116,11 +117,13 @@ func (s *Service) RefreshTokens(ctx context.Context, clientID, refreshToken stri
 	if rt.ClientID != clientID {
 		return nil, ErrRefreshInvalid
 	}
-	return s.issueTokens(ctx, rt.UserID, rt.ClientID, "")
+	// 继承家族: 滚动出的新 token 与被它取代的旧 token 同属一条链
+	return s.issueTokens(ctx, rt.UserID, rt.ClientID, "", rt.FamilyID)
 }
 
 // issueTokens 逐级重签的落点: 用 akasha 私钥为该用户签发面向该 client 的三 token。
-func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce string) (*TokenSet, error) {
+// familyID 标识这条 refresh 链的归属, 检测到重放时按它连坐撤销。
+func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce, familyID string) (*TokenSet, error) {
 	u, err := s.account.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -151,19 +154,29 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 		"preferred_username": u.Username,
 	}
 
-	idClaims := cloneClaims(base)
-	idClaims["exp"] = now.Add(s.ttl.IDToken).Unix()
-	if nonce != "" {
-		idClaims["nonce"] = nonce
-	}
-	idToken, err := s.keys.SignClaims(idClaims)
+	// access_token 先签 —— id_token 的 at_hash 要拿它的字符串来算, 顺序不能反
+	accessClaims := cloneClaims(base)
+	accessClaims["exp"] = now.Add(s.ttl.AccessToken).Unix()
+	accessToken, err := s.keys.SignClaims(accessClaims)
 	if err != nil {
 		return nil, err
 	}
 
-	accessClaims := cloneClaims(base)
-	accessClaims["exp"] = now.Add(s.ttl.AccessToken).Unix()
-	accessToken, err := s.keys.SignClaims(accessClaims)
+	idClaims := cloneClaims(base)
+	idClaims["exp"] = now.Add(s.ttl.IDToken).Unix()
+	// auth_time: 本次认证发生的时刻。akasha 无会话, 每次签发都紧跟一次真实的上游
+	// 认证, 因此它恒等于"刚刚" —— 带 max_age 的请求 REQUIRED 此 claim。
+	idClaims["auth_time"] = now.Unix()
+	// azp (authorized party): 拿到这张票的是谁。aud 单值且等于 client_id 时规范上
+	// 可省, 但主流 OP 一律发送, 严格的 RP 也会读它做交叉校验。
+	idClaims["azp"] = clientID
+	// at_hash: access_token 的指纹, 让 RP 能验证"这两张票是同一次签发的"。
+	// 缺它时 AppAuth-iOS / Nimbus 等严格实现会直接判 id_token 非法。
+	idClaims["at_hash"] = accessTokenHash(accessToken)
+	if nonce != "" {
+		idClaims["nonce"] = nonce
+	}
+	idToken, err := s.keys.SignClaims(idClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +187,7 @@ func (s *Service) issueTokens(ctx context.Context, userID int64, clientID, nonce
 	}
 	if err := s.repo.InsertRefresh(ctx, &RefreshToken{
 		TokenHash: hashOpaque(refresh),
+		FamilyID:  familyID,
 		UserID:    u.ID,
 		ClientID:  clientID,
 		ExpiresAt: now.Add(s.ttl.Refresh),
@@ -225,6 +239,16 @@ func cloneClaims(src jwt.MapClaims) jwt.MapClaims {
 		dst[k] = v
 	}
 	return dst
+}
+
+// accessTokenHash 计算 at_hash (OIDC Core §3.1.3.6)。
+//
+// 算法由 id_token 的签名算法决定: RS256 用 SHA-256, 取哈希的【左半边】
+// (前 128 位) 再 base64url。取左半边不是随意裁剪 —— 规范如此规定,
+// RP 会按同样的规则算, 少取或多取都会导致校验失败。
+func accessTokenHash(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
 }
 
 func computeS256(verifier string) string {
