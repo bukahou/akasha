@@ -34,9 +34,12 @@ type RefreshToken struct {
 	TokenHash string `gorm:"column:token_hash"`
 	// FamilyID 令牌家族 = 签发这条链的原始 auth_code 的 code_hash。
 	// 滚动刷新时由父 token 继承, 使整条链可被一次性连坐撤销。
-	FamilyID  string    `gorm:"column:family_id"`
-	UserID    int64     `gorm:"column:user_id"`
-	ClientID  string    `gorm:"column:client_id"`
+	FamilyID string `gorm:"column:family_id"`
+	UserID   int64  `gorm:"column:user_id"`
+	ClientID string `gorm:"column:client_id"`
+	// Scope 原始授权范围, 滚动刷新时原样继承。
+	// RFC 6749 §6: 刷新出的 token 其范围不得超过原始授权。
+	Scope     string    `gorm:"column:scope"`
 	ExpiresAt time.Time `gorm:"column:expires_at"`
 	Revoked   bool      `gorm:"column:revoked"`
 }

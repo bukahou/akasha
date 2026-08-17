@@ -64,10 +64,13 @@ func (h *Handler) discovery(w http.ResponseWriter, r *http.Request) {
 		// 声明 none 是有意义的: 它告诉 RP "静默认证这条路存在但会失败",
 		// RP 据此知道该拿到 login_required 而不是超时
 		"prompt_values_supported": []string{"none", "login", "select_account"},
-		// claims_supported 让 RP 知道能拿到哪些字段, 不必靠试
+		// claims_supported 让 RP 知道能拿到哪些字段, 不必靠试。
+		// 后半段那些【按 scope 分发】(见 identityClaims): 只申请 openid 的 RP
+		// 一个都拿不到 —— 这里声明的是"能拿到什么", 不是"一定会拿到什么"
 		"claims_supported": []string{
 			"iss", "sub", "aud", "exp", "iat", "auth_time", "azp", "at_hash", "nonce",
-			"email", "email_verified", "name", "preferred_username",
+			"email", "email_verified", // scope=email
+			"name", "preferred_username", "picture", // scope=profile
 		},
 	})
 }

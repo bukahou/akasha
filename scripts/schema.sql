@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   family_id  CHAR(64)    NOT NULL COMMENT '令牌家族 = 原始 auth_code 的 code_hash',
   user_id    BIGINT      NOT NULL,
   client_id  VARCHAR(64) NOT NULL,
+  scope      VARCHAR(255) NOT NULL DEFAULT 'openid email profile' COMMENT '原始授权范围, 滚动刷新时继承 (RFC 6749 §6: 不得超过原始授权)',
   expires_at DATETIME    NOT NULL,
   revoked    TINYINT(1)  NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
