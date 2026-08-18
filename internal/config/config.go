@@ -19,6 +19,12 @@ type Config struct {
 	Issuer string `env:"AKASHA_ISSUER" envDefault:"http://localhost:9100"`
 
 	// ---- 存储 ----
+	// DBLogLevel GORM 日志级别: silent / error / warn / info。
+	// 默认 warn (只留慢查询与真实错误)。调成 info 会打印每条 SQL ——
+	// 排查时很有用, 但【参数仍然不会出现】(见 storage 包的 ParameterizedQueries),
+	// 所以开 info 不会把用户输入写进日志。
+	// 加这一项是因为此前它写死在代码里: 想看一眼 SQL 得改代码重新编译。
+	DBLogLevel string `env:"AKASHA_DB_LOG_LEVEL" envDefault:"warn"`
 	// 形如 user:pass@tcp(host:3306)/akasha?charset=utf8mb4&parseTime=True&loc=UTC
 	// loc=UTC 而非 Local: 容器内是 UTC, 混用会让日志时间与 DB 时间对不上
 	DBDSN string `env:"AKASHA_DB_DSN,required"`

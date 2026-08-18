@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -101,8 +102,13 @@ func (s *Service) ExchangeCode(ctx context.Context, clientID, code, verifier, re
 	if len(verifier) < pkceVerifierMinLen || len(verifier) > pkceVerifierMaxLen {
 		return nil, ErrPKCEMalformed
 	}
-	// S256(verifier) == 签发时的 challenge
-	if computeS256(verifier) != ac.PKCEChallenge {
+	// S256(verifier) == 签发时的 challenge。
+	//
+	// 用常数时间比较而非 != : 可利用性确实低 (challenge 随 code 一次性作废,
+	// 攻击者没有反复试探的机会), 但联邦侧的 state 与 HMAC 比对已经用了
+	// hmac.Equal 与 subtle.ConstantTimeCompare —— 同一个代码库里凭证比较
+	// 两种写法并存, 迟早有人照抄那个不安全的。统一成一种更省心。
+	if subtle.ConstantTimeCompare([]byte(computeS256(verifier)), []byte(ac.PKCEChallenge)) != 1 {
 		return nil, ErrPKCEMismatch
 	}
 	return s.issueTokens(ctx, grantFromCode(ac))

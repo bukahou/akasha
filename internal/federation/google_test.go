@@ -1,6 +1,8 @@
 package federation
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"net/url"
 	"testing"
 
@@ -80,5 +82,59 @@ func TestGoogleAuthCodeURL_EndToEndDefault(t *testing.T) {
 	if got := u.Query().Get("prompt"); got != "select_account" {
 		t.Errorf("默认链路上的 prompt = %q, 期望 select_account\n"+
 			"  这是无会话定案「用户随时能换上游账号」真正落地的那一步", got)
+	}
+}
+
+// TestGoogleAuthCodeURL_CarriesPKCE ⭐ akasha 当 RP 时也要用 PKCE。
+//
+// # 为什么这里也需要
+//
+// akasha 对下游【强制】PKCE S256, 自己向上游却一直不带 —— 一个把"亲手实现
+// 协议两侧"写进定位的项目, 这处不对称格外显眼。RFC 9700 建议所有 client
+// (含能保管 secret 的 confidential) 都用: 它防的是回调阶段 code 被截获,
+// 而那与 client 能不能保管 secret 无关。
+//
+// verifier 本身留在签名 cookie 里, 发出去的只有 S256(verifier)。
+func TestGoogleAuthCodeURL_CarriesPKCE(t *testing.T) {
+	const verifier = "test-verifier-0123456789012345678901234567890123456789"
+
+	raw := newTestGoogleProvider().AuthCodeURL(AuthRequest{
+		State: "s", Nonce: "n", Prompt: "select_account", Verifier: verifier,
+	})
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("授权地址不是合法 URL: %q", raw)
+	}
+	q := u.Query()
+
+	if q.Get("code_challenge_method") != "S256" {
+		t.Errorf("code_challenge_method = %q, 期望 S256（plain 等于没有防护）", q.Get("code_challenge_method"))
+	}
+	challenge := q.Get("code_challenge")
+	if challenge == "" {
+		t.Fatal("没有发送 code_challenge —— 上游侧 PKCE 没生效")
+	}
+
+	// challenge 必须是 verifier 的 S256, 且【不等于 verifier 本身】——
+	// 后者是最典型的实现错误: 把原文当挑战发出去, PKCE 直接失效
+	want := base64.RawURLEncoding.EncodeToString(func() []byte {
+		sum := sha256.Sum256([]byte(verifier))
+		return sum[:]
+	}())
+	if challenge != want {
+		t.Errorf("code_challenge = %q, 期望 S256(verifier) = %q", challenge, want)
+	}
+	if challenge == verifier {
+		t.Error("把 verifier 原文当作 challenge 发出去了 —— 截获它的人可直接兑换")
+	}
+}
+
+// TestGoogleAuthCodeURL_OmitsEmptyVerifier 没有 verifier 时不发 challenge。
+// 留给将来不支持 PKCE 的上游 —— 发一个空 challenge 会让它直接报错。
+func TestGoogleAuthCodeURL_OmitsEmptyVerifier(t *testing.T) {
+	raw := newTestGoogleProvider().AuthCodeURL(AuthRequest{State: "s", Nonce: "n"})
+	u, _ := url.Parse(raw)
+	if u.Query().Has("code_challenge") {
+		t.Errorf("Verifier 为空时仍发了 code_challenge: %s", raw)
 	}
 }

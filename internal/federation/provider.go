@@ -40,8 +40,7 @@ type Provider interface {
 	AuthCodeURL(req AuthRequest) string
 
 	// Exchange 用回调拿到的 code 向上游换取身份断言。
-	// nonce 传入是为了校验上游 id_token 里的 nonce 与本次流程一致。
-	Exchange(ctx context.Context, code, nonce string) (account.UpstreamIdentity, error)
+	Exchange(ctx context.Context, req ExchangeRequest) (account.UpstreamIdentity, error)
 }
 
 // AuthRequest 一次上游跳转的参数。
@@ -54,6 +53,19 @@ type AuthRequest struct {
 	Nonce string // 防 id_token 重放, 必须与上游 id_token 里的一致
 	// Prompt 空 = 不指定。取值同 OIDC: none / login / consent / select_account
 	Prompt string
+	// Verifier PKCE code_verifier。provider 自行算出 challenge 送给上游,
+	// 兑换时再出示原文。空 = 该上游不支持 PKCE, 跳过。
+	Verifier string
+}
+
+// ExchangeRequest 一次后信道兑换的参数。
+type ExchangeRequest struct {
+	Code string // 上游回调带回的授权码
+	// Nonce 本次流程发出的那个, 用于比对上游 id_token 里的值。
+	// verifier 不同, nonce 是【调用方比对】而非交给上游 —— 因为上游只负责回显。
+	Nonce string
+	// Verifier PKCE code_verifier 原文。截获 code 的人拿不出它, 兑换即失败。
+	Verifier string
 }
 
 // Registry provider 注册表: URL 里的 {provider} → 具体实现。

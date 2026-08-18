@@ -64,7 +64,7 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		next = ""
 	}
 
-	state, nonce, err := h.keeper.Begin(w, next)
+	fs, err := h.keeper.Begin(w, next)
 	if err != nil {
 		slog.Error("生成联邦流程状态失败", "err", err, "provider", name)
 		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
@@ -73,9 +73,10 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	prompt := upstreamPrompt(h.op.Prompt(next))
 	slog.Info("联邦登录开始", "provider", name, "prompt", prompt)
 	http.Redirect(w, r, provider.AuthCodeURL(AuthRequest{
-		State:  state,
-		Nonce:  nonce,
-		Prompt: prompt,
+		State:    fs.State,
+		Nonce:    fs.Nonce,
+		Prompt:   prompt,
+		Verifier: fs.Verifier,
 	}), http.StatusFound)
 }
 
@@ -145,7 +146,11 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstream, err := provider.Exchange(r.Context(), code, fs.Nonce)
+	upstream, err := provider.Exchange(r.Context(), ExchangeRequest{
+		Code:     code,
+		Nonce:    fs.Nonce,
+		Verifier: fs.Verifier,
+	})
 	if err != nil {
 		slog.Error("上游身份换取失败", "err", err, "provider", name)
 		failBack(w, r, "upstream", fs.Next)

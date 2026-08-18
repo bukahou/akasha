@@ -96,7 +96,7 @@ func main() {
 
 	// ③ 存储 — 七张表的唯一连接池, 后面所有 repository 共用这一个 *gorm.DB
 	//    连接参数与日志策略见 storage 包 (装配蓝图不管那些细节)
-	db, err := storage.OpenMySQL(cfg.DBDSN)
+	db, err := storage.OpenMySQL(cfg.DBDSN, cfg.DBLogLevel)
 	if err != nil {
 		slog.Error("连接数据库失败", "err", err)
 		os.Exit(1)

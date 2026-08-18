@@ -25,10 +25,11 @@ func newKeeper(t *testing.T, ttl time.Duration) *StateKeeper {
 func begin(t *testing.T, k *StateKeeper, next string) (state string, r *http.Request) {
 	t.Helper()
 	w := httptest.NewRecorder()
-	state, _, err := k.Begin(w, next)
+	fs, err := k.Begin(w, next)
 	if err != nil {
 		t.Fatalf("Begin 失败: %v", err)
 	}
+	state = fs.State
 	r = httptest.NewRequest("GET", "/federation/google/callback", nil)
 	for _, c := range w.Result().Cookies() {
 		r.AddCookie(c)
@@ -68,10 +69,11 @@ func TestStateKeeper_RejectsMissingCookie(t *testing.T) {
 	k := newKeeper(t, 10*time.Minute)
 
 	w := httptest.NewRecorder()
-	state, _, err := k.Begin(w, "/authorize?x=1")
+	fs, err := k.Begin(w, "/authorize?x=1")
 	if err != nil {
 		t.Fatalf("Begin 失败: %v", err)
 	}
+	state := fs.State
 
 	// 受害者浏览器: 有攻击者给的 state, 但没有任何 cookie
 	victim := httptest.NewRequest("GET", "/federation/google/callback", nil)
@@ -85,10 +87,11 @@ func TestStateKeeper_RejectsTampering(t *testing.T) {
 
 	t.Run("篡改 payload 后签名失效", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		state, _, err := k.Begin(w, "/authorize?x=1")
+		begun, err := k.Begin(w, "/authorize?x=1")
 		if err != nil {
 			t.Fatalf("Begin 失败: %v", err)
 		}
+		state := begun.State
 		orig := w.Result().Cookies()[0]
 
 		// 把 next 改成钓鱼站, 签名照抄
@@ -124,10 +127,11 @@ func TestStateKeeper_RejectsTampering(t *testing.T) {
 	t.Run("另一把密钥签的 cookie 被拒", func(t *testing.T) {
 		other := newKeeper(t, 10*time.Minute)
 		w := httptest.NewRecorder()
-		state, _, err := other.Begin(w, "/authorize?x=1")
+		fs, err := other.Begin(w, "/authorize?x=1")
 		if err != nil {
 			t.Fatalf("Begin 失败: %v", err)
 		}
+		state := fs.State
 		_ = state
 		// 换个 salt 派生出的密钥
 		k2, err := NewStateKeeper("completely-different-salt", 10*time.Minute, false)
@@ -163,14 +167,16 @@ func TestStateKeeper_MultiTab(t *testing.T) {
 	k := newKeeper(t, 10*time.Minute)
 
 	w1, w2 := httptest.NewRecorder(), httptest.NewRecorder()
-	state1, _, err := k.Begin(w1, "/authorize?client_id=geass")
+	beginFS1, err := k.Begin(w1, "/authorize?client_id=geass")
 	if err != nil {
 		t.Fatalf("Begin 失败: %v", err)
 	}
-	state2, _, err := k.Begin(w2, "/authorize?client_id=atlhyper")
+	state1 := beginFS1.State
+	beginFS2, err := k.Begin(w2, "/authorize?client_id=atlhyper")
 	if err != nil {
 		t.Fatalf("Begin 失败: %v", err)
 	}
+	state2 := beginFS2.State
 
 	c1, c2 := w1.Result().Cookies()[0], w2.Result().Cookies()[0]
 	if c1.Name == c2.Name {
@@ -199,7 +205,7 @@ func TestStateKeeper_MultiTab(t *testing.T) {
 func TestStateKeeper_CookieAttributes(t *testing.T) {
 	k := newKeeper(t, 10*time.Minute)
 	w := httptest.NewRecorder()
-	if _, _, err := k.Begin(w, "/authorize?x=1"); err != nil {
+	if _, err := k.Begin(w, "/authorize?x=1"); err != nil {
 		t.Fatalf("Begin 失败: %v", err)
 	}
 	c := w.Result().Cookies()[0]

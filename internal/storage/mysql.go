@@ -10,12 +10,31 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
+
+// parseLogLevel 配置值 → GORM 日志级别。无法识别的值退回 warn 并告警,
+// 而不是静默用默认值 —— 后者会让"我明明配了 info 怎么没生效"变成一桩悬案。
+func parseLogLevel(v string) gormlogger.LogLevel {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "silent":
+		return gormlogger.Silent
+	case "error":
+		return gormlogger.Error
+	case "warn", "":
+		return gormlogger.Warn
+	case "info":
+		return gormlogger.Info
+	default:
+		slog.Warn("无法识别的数据库日志级别, 已退回 warn", "value", v)
+		return gormlogger.Warn
+	}
+}
 
 // slowQueryThreshold 超过此时长的 SQL 以 WARN 记录。
 // 本项目全部查询都走唯一索引, 200ms 已经极宽松 —— 真触发就说明出事了
@@ -48,8 +67,8 @@ const (
 )
 
 // OpenMySQL 建立连接池并装上日志桥接。失败即返回 error 让调用方 fail-fast。
-func OpenMySQL(dsn string) (*gorm.DB, error) {
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: newGormLogger()})
+func OpenMySQL(dsn, logLevel string) (*gorm.DB, error) {
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: newGormLogger(logLevel)})
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
@@ -99,9 +118,9 @@ func PingContext(ctx context.Context, db *gorm.DB) error {
 //
 //	默认 logger 输出带 ANSI 颜色的纯文本, 与本服务的 JSON 日志混在一起,
 //	集群侧采集器解析会失败。桥接到 slog 后全链路都是 JSON。
-func newGormLogger() gormlogger.Interface {
+func newGormLogger(level string) gormlogger.Interface {
 	return gormlogger.NewSlogLogger(slog.Default(), gormlogger.Config{
-		LogLevel:                  gormlogger.Warn, // 屏蔽逐条 SQL, 只留慢查询与真实错误
+		LogLevel:                  parseLogLevel(level),
 		SlowThreshold:             slowQueryThreshold,
 		IgnoreRecordNotFoundError: true,
 		ParameterizedQueries:      true,

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/hkdf"
+
+	"golang.org/x/oauth2"
 )
 
 // # 联邦往返期间的状态保管
@@ -87,7 +89,13 @@ type flowState struct {
 	State string `json:"s"`
 	Nonce string `json:"n"`
 	Next  string `json:"x"`
-	Exp   int64  `json:"e"`
+	// Verifier PKCE code_verifier —— akasha 作为 RP 向上游出示的那一份。
+	//
+	// 它【必须与 state 存在同一个签名 cookie 里】: verifier 的全部价值就在于
+	// "只有发起这次流程的人拿得出它"。放进 URL 或另一个不受保护的地方,
+	// 截获 code 的人就能一并拿到, PKCE 直接失效。
+	Verifier string `json:"v"`
+	Exp      int64  `json:"e"`
 }
 
 // StateKeeper 用签名 cookie 保管联邦往返状态。
@@ -114,22 +122,27 @@ func NewStateKeeper(pairwiseSalt string, ttl time.Duration, cookieSecure bool) (
 }
 
 // Begin 生成 state/nonce 并写入签名 cookie, 供 start 端点调用。
-func (k *StateKeeper) Begin(w http.ResponseWriter, next string) (state, nonce string, err error) {
-	if state, err = randomToken(); err != nil {
-		return "", "", err
+func (k *StateKeeper) Begin(w http.ResponseWriter, next string) (fs *flowState, err error) {
+	state, err := randomToken()
+	if err != nil {
+		return nil, err
 	}
-	if nonce, err = randomToken(); err != nil {
-		return "", "", err
+	nonce, err := randomToken()
+	if err != nil {
+		return nil, err
 	}
 
-	payload, err := json.Marshal(flowState{
+	fs = &flowState{
 		State: state,
 		Nonce: nonce,
 		Next:  next,
-		Exp:   time.Now().Add(k.ttl).Unix(),
-	})
+		// oauth2.GenerateVerifier 产出 RFC 7636 合规的高熵随机串 (43-128 字符)
+		Verifier: oauth2.GenerateVerifier(),
+		Exp:      time.Now().Add(k.ttl).Unix(),
+	}
+	payload, err := json.Marshal(fs)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -143,7 +156,7 @@ func (k *StateKeeper) Begin(w http.ResponseWriter, next string) (state, nonce st
 		// Strict 会把这类跳转的 cookie 掐掉, 联邦登录直接失效。
 		SameSite: http.SameSiteLaxMode,
 	})
-	return state, nonce, nil
+	return fs, nil
 }
 
 // Finish 校验回调带回的 state 并取出保管的内容, 随后清除 cookie。

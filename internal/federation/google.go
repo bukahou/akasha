@@ -81,18 +81,26 @@ func (g *googleProvider) AuthCodeURL(req AuthRequest) string {
 	if req.Prompt != "" {
 		opts = append(opts, oauth2.SetAuthURLParam("prompt", req.Prompt))
 	}
+	if req.Verifier != "" {
+		// 发出去的是 S256(verifier), verifier 本身留在签名 cookie 里
+		opts = append(opts, oauth2.S256ChallengeOption(req.Verifier))
+	}
 	return g.oauth.AuthCodeURL(req.State, opts...)
 }
 
 // Exchange 后信道换票: code → Google 的 token → 验 id_token → 翻译成统一断言。
-func (g *googleProvider) Exchange(ctx context.Context, code, nonce string) (account.UpstreamIdentity, error) {
+func (g *googleProvider) Exchange(ctx context.Context, req ExchangeRequest) (account.UpstreamIdentity, error) {
 	var zero account.UpstreamIdentity
 	// 回调请求自带的 ctx 里没有我们那个带超时的 client, 这里补上 ——
 	// 否则换 token 与验签时的出站请求会退回无超时的 http.DefaultClient
 	ctx = oidc.ClientContext(ctx, g.client)
 
 	// 这一步是服务器直连 Google, client_secret 不经过浏览器
-	token, err := g.oauth.Exchange(ctx, code)
+	opts := []oauth2.AuthCodeOption{}
+	if req.Verifier != "" {
+		opts = append(opts, oauth2.VerifierOption(req.Verifier))
+	}
+	token, err := g.oauth.Exchange(ctx, req.Code, opts...)
 	if err != nil {
 		return zero, fmt.Errorf("向 Google 兑换 code 失败: %w", err)
 	}
@@ -109,7 +117,7 @@ func (g *googleProvider) Exchange(ctx context.Context, code, nonce string) (acco
 	}
 	// nonce 必须由调用方比对: verifier 不知道本次流程发出的是哪个 nonce。
 	// 少了这一步, 一张从别处拿到的 Google id_token 就能拿来冒充该用户登录。
-	if idToken.Nonce != nonce {
+	if idToken.Nonce != req.Nonce {
 		return zero, errors.New("Google id_token 的 nonce 与本次流程不匹配")
 	}
 

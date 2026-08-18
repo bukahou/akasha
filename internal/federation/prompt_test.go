@@ -90,6 +90,6 @@ type stubProvider string
 
 func (s stubProvider) Name() string                   { return string(s) }
 func (s stubProvider) AuthCodeURL(AuthRequest) string { return "" }
-func (s stubProvider) Exchange(context.Context, string, string) (account.UpstreamIdentity, error) {
+func (s stubProvider) Exchange(context.Context, ExchangeRequest) (account.UpstreamIdentity, error) {
 	return account.UpstreamIdentity{}, nil
 }
