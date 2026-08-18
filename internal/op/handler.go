@@ -36,10 +36,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /end_session", h.endSession)
 	mux.HandleFunc("GET /userinfo", h.userinfo)
 	mux.HandleFunc("POST /userinfo", h.userinfo)
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
+	// 健康探针【不在这里】—— 它不是协议端点, 归 server.Health (见 main 的装配)
 }
 
 // discovery RFC 8414 / OIDC Discovery 发现文档。

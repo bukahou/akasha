@@ -52,7 +52,10 @@
 //	  POST /token                             后信道: code/refresh → 三 token
 //	  GET  /userinfo                          Bearer 换用户资料 (实时状态)
 //	  GET  /end_session                       RP 发起登出 (无状态可清, 只管送回)
-//	  GET  /health                            存活探针
+//	server 包 (探针, K8s 读):
+//	  GET  /healthz                           存活: 不查任何依赖 (查了会导致误重启)
+//	  GET  /readyz                            就绪: DB 可达 + 密钥已加载
+//	  GET  /health                            /healthz 的别名 (旧配置兼容)
 //	login 包 (柜台, 人读):
 //	  GET  /       说明页 (这是中枢, 请从应用发起登录)
 //	  GET  /login  上游登录入口 (无密码表单, 无注册, 无登出)
@@ -63,6 +66,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -162,11 +166,27 @@ func main() {
 		Prompt:   op.PromptFromNext,
 	})
 
+	// 健康探针: liveness 不查任何依赖 (DB 挂掉时正确的反应是摘出负载均衡,
+	// 而不是把所有 Pod 重启一遍); readiness 才查 DB 与密钥。
+	// 检查项以函数注入, server 包因此不认识数据库也不认识密钥。
+	healthHandler := server.NewHealth(
+		server.Check{Name: "database", Probe: func(ctx context.Context) error {
+			return storage.PingContext(ctx, db)
+		}},
+		server.Check{Name: "signing-key", Probe: func(context.Context) error {
+			if km.Kid() == "" {
+				return errors.New("签名密钥未加载")
+			}
+			return nil
+		}},
+	)
+
 	// ⑥ 路由 — 各 feature 自治注册自己的端点 (加端点只改对应包, main 不动)
 	mux := http.NewServeMux()
 	opHandler.Register(mux)
 	loginHandler.Register(mux)
 	fedHandler.Register(mux)
+	healthHandler.Register(mux)
 
 	// 全局 middleware: 安全头 (点击劫持/嗅探/Referer 泄漏防护) + CORS + 请求体上限。
 	// 包在最外层 —— 每一条响应都该带上, 包括 404 与各类错误页。

@@ -7,6 +7,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -21,13 +22,58 @@ import (
 // (索引失效 / 网络劣化 / 表膨胀), 值得被日志叫醒。
 const slowQueryThreshold = 200 * time.Millisecond
 
+// 连接池参数。
+//
+// # 为什么必须显式设置
+//
+// database/sql 的默认值是 MaxIdleConns=2 且【MaxOpenConns 无上限】。两头都不对:
+//
+//	无上限   → 突发流量下连接数可以冲到几百, 先打爆的是数据库而不是本服务。
+//	          TiDB Cloud Serverless 有连接数配额, 超了是整库拒绝服务
+//	空闲仅 2 → 稍有并发就要反复新建连接。每次新建都含 TLS 握手 (生产强制 TLS),
+//	          在东京到本地这种链路上是几十毫秒级的开销, 且全落在用户等待里
+const (
+	// maxOpenConns 本服务的查询全部走唯一索引且都是毫秒级, 25 条足够支撑
+	// 远超实际的并发; 真到上限时排队等待也好过压垮数据库。
+	maxOpenConns = 25
+	// maxIdleConns 与 maxOpen 同量级, 避免"用完就关、下次再建"的抖动。
+	// 空闲连接的成本只是数据库侧的一个会话, 远低于反复握手。
+	maxIdleConns = 25
+	// connMaxLifetime 连接的硬上限。云数据库与中间的负载均衡都会单方面掐掉
+	// 长连接, 客户端不主动轮换就会周期性地撞上"连接已被对端关闭"。
+	// 比常见的空闲超时短一截, 让轮换发生在我们自己手里。
+	connMaxLifetime = 5 * time.Minute
+	// connMaxIdleTime 空闲太久的连接主动回收, 免得低峰期挂着一堆没用的会话。
+	connMaxIdleTime = 2 * time.Minute
+)
+
 // OpenMySQL 建立连接池并装上日志桥接。失败即返回 error 让调用方 fail-fast。
 func OpenMySQL(dsn string) (*gorm.DB, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: newGormLogger()})
 	if err != nil {
 		return nil, fmt.Errorf("连接数据库失败: %w", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("取底层连接池失败: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(maxOpenConns)
+	sqlDB.SetMaxIdleConns(maxIdleConns)
+	sqlDB.SetConnMaxLifetime(connMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(connMaxIdleTime)
 	return db, nil
+}
+
+// PingContext 探活底层连接 (就绪探针用)。
+//
+// 单独导出而不是让 main 自己 db.DB().PingContext(): 那会把"怎么从 GORM 拿到
+// 底层池"这个细节泄漏到装配蓝图里, 而本包存在的理由正是收口这类细节。
+func PingContext(ctx context.Context, db *gorm.DB) error {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.PingContext(ctx)
 }
 
 // newGormLogger GORM 日志桥接到 slog。
