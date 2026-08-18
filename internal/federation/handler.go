@@ -5,13 +5,25 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/bukahou/akasha/internal/account"
 )
 
-// CompleteAuthorize 认证成功后完成停车的 authorize 事务 (签 code 并回跳 RP)。
-// 由 op 包实现、经 main 注入 —— 本包因此不必依赖 op。
-type CompleteAuthorize func(w http.ResponseWriter, r *http.Request, next string, userID int64)
+// OPBridge op 侧提供给联邦流程的能力, 由 main 注入 —— 本包因此不必依赖 op。
+//
+// 用结构体而非四个位置参数: 它们都是函数值, 位置传参写错顺序编译器拦不住
+// (把 Complete 和 Deny 传反 = 封禁用户照样拿到 code)。
+type OPBridge struct {
+	// Complete 认证成功: 就地签 code 并回跳 RP
+	Complete func(w http.ResponseWriter, r *http.Request, next string, userID int64)
+	// Deny 认证失败且【下游有权知道】: 按规范把 error 回投给 RP
+	Deny func(w http.ResponseWriter, r *http.Request, next, errCode, desc string)
+	// SafeNext 校验回跳目标是否为本站合法断点 (防开放重定向)
+	SafeNext func(next string) bool
+	// Prompt 取出停车请求里的 prompt, 用于透传给上游
+	Prompt func(next string) string
+}
 
 // Handler 联邦端点: 送用户去上游, 把回来的人交给 op 换成授权码。
 //
@@ -21,16 +33,13 @@ type Handler struct {
 	registry *Registry
 	accounts *account.Service
 	keeper   *StateKeeper
-	complete CompleteAuthorize
-	// safeNext 校验回跳目标是否为本站合法断点。与 complete 同样由装配方注入,
-	// 避免本包依赖 op —— login 包为复用同一个函数直接 import 了 op, 造成了
-	// 计划外的依赖方向, 这里不重蹈覆辙。
-	safeNext func(string) bool
+	// op 侧的能力全部由装配方注入, 本包不 import op ——
+	// login 包为复用一个函数直接 import 了 op, 造成计划外的依赖方向, 这里不重蹈覆辙。
+	op OPBridge
 }
 
-func NewHandler(registry *Registry, accounts *account.Service, keeper *StateKeeper,
-	complete CompleteAuthorize, safeNext func(string) bool) *Handler {
-	return &Handler{registry: registry, accounts: accounts, keeper: keeper, complete: complete, safeNext: safeNext}
+func NewHandler(registry *Registry, accounts *account.Service, keeper *StateKeeper, bridge OPBridge) *Handler {
+	return &Handler{registry: registry, accounts: accounts, keeper: keeper, op: bridge}
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -51,7 +60,7 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	// /federation/google/start?next=https://evil.com, 用户在 akasha 正常登录后
 	// 被送去钓鱼站, 而地址栏全程显示的是可信域名 (开放重定向)。
 	next := r.URL.Query().Get("next")
-	if !h.safeNext(next) {
+	if !h.op.SafeNext(next) {
 		next = ""
 	}
 
@@ -61,11 +70,41 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
 		return
 	}
-	slog.Info("联邦登录开始", "provider", name)
-	http.Redirect(w, r, provider.AuthCodeURL(state, nonce), http.StatusFound)
+	prompt := upstreamPrompt(h.op.Prompt(next))
+	slog.Info("联邦登录开始", "provider", name, "prompt", prompt)
+	http.Redirect(w, r, provider.AuthCodeURL(AuthRequest{
+		State:  state,
+		Nonce:  nonce,
+		Prompt: prompt,
+	}), http.StatusFound)
 }
 
-// callback 上游回来: 校验 state → 换身份断言 → 裁决账号 → 建会话 → 回到断点。
+// upstreamPrompt 决定往上游发什么 prompt。
+//
+// # 为什么默认就带 select_account
+//
+// 无会话定案宣称的好处之一是"用户随时能换上游账号"(中枢会话会把人静默钉死在
+// 第一次登录的那个账号上)。但 akasha 拆掉【自己的】会话, 拆不掉【上游的】——
+// Google 那边登着一个账号时, 不带 prompt 的跳转会静默返回它, 用户连选的机会
+// 都没有。好处只兑现了一半。带上 select_account 才真正把选择权还给用户。
+//
+// 这与"登录页必须保留、必须表明是第三方身份"是同一个立场在上游侧的延伸:
+// 身份的选择不该被藏起来。代价是多一次点击。
+//
+// # 为什么 RP 要求 login 时要升级
+//
+// prompt=login 比 select_account 更强: 前者要求用户【重新证明身份】(敏感操作前
+// 的 step-up), 后者只要求选一个账号。RP 显式要更强的, 就给它更强的。
+func upstreamPrompt(requested string) string {
+	for _, p := range strings.Fields(requested) {
+		if p == "login" {
+			return "login"
+		}
+	}
+	return "select_account"
+}
+
+// callback 上游回来: 校验 state → 换身份断言 → 裁决账号 → 就地续跑停车的 authorize。
 func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("provider")
 	provider, err := h.registry.Lookup(name)
@@ -78,7 +117,14 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	// 用户在上游点了"取消", 或上游拒绝授权
 	if e := q.Get("error"); e != "" {
 		slog.Info("用户在上游取消或被拒绝", "provider", name, "reason", e)
-		http.Redirect(w, r, "/login", http.StatusFound)
+		// ⭐ next 此刻还在签名 cookie 里, 必须取出来带回登录页。
+		// 不取的话: 用户误点一次"取消"→ 回到无 next 的登录页 → 再登成功也只能
+		// 落到"请从应用发起登录"的说明页, 必须回下游整个重来。这是很难自查的死路。
+		next := ""
+		if fs, ferr := h.keeper.Finish(w, r, q.Get("state")); ferr == nil {
+			next = fs.Next
+		}
+		failBack(w, r, "cancelled", next)
 		return
 	}
 
@@ -87,21 +133,22 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	fs, err := h.keeper.Finish(w, r, q.Get("state"))
 	if err != nil {
 		slog.Warn("联邦回调状态校验失败", "err", err, "provider", name)
-		failBack(w, r, "state")
+		// 这一类【确实无处可回】—— 上下文本身就丢了, 不知道用户原本要去哪个 RP
+		failBack(w, r, "state", "")
 		return
 	}
 
 	code := q.Get("code")
 	if code == "" {
 		slog.Warn("上游未返回授权码", "provider", name)
-		failBack(w, r, "upstream")
+		failBack(w, r, "upstream", fs.Next)
 		return
 	}
 
 	upstream, err := provider.Exchange(r.Context(), code, fs.Nonce)
 	if err != nil {
 		slog.Error("上游身份换取失败", "err", err, "provider", name)
-		failBack(w, r, "upstream")
+		failBack(w, r, "upstream", fs.Next)
 		return
 	}
 
@@ -109,11 +156,18 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	user, err := h.accounts.ResolveUpstreamIdentity(r.Context(), upstream)
 	if err != nil {
 		if errors.Is(err, account.ErrUserBanned) {
-			failBack(w, r, "banned")
+			// 封禁是【下游有权知道】的结论: 重试没有意义, 换个 provider 也进不去。
+			// 按规范回投 access_denied, 让 geass 用自己的页面向用户解释 ——
+			// 把人留在 akasha 的裸页面上, RP 永远不知道发生了什么。
+			if fs.Next != "" {
+				h.op.Deny(w, r, fs.Next, "access_denied", "账号已封禁")
+				return
+			}
+			failBack(w, r, "banned", "")
 			return
 		}
 		slog.Error("裁决上游身份失败", "err", err, "provider", name)
-		failBack(w, r, "internal")
+		failBack(w, r, "internal", fs.Next)
 		return
 	}
 
@@ -127,7 +181,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	// 就地完成停车的 authorize: 签 code 并回跳 RP。
 	// 【不回跳 /authorize】—— 无会话下那里查不到人, 会再次弹去登录页形成死循环。
-	h.complete(w, r, fs.Next, user.ID)
+	h.op.Complete(w, r, fs.Next, user.ID)
 }
 
 // failBack 联邦失败时回到登录页, 而不是甩一个白底黑字的错误页给用户。
@@ -135,6 +189,11 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 // 只传【原因码】不传文案: 文案由 login 包按白名单映射。若把 message 直接放进
 // query, 攻击者就能构造 /login?error=<任意文案> 借可信域名伪造提示
 // (例如"账号异常, 请致电 XXX 解锁")。
-func failBack(w http.ResponseWriter, r *http.Request, reason string) {
-	http.Redirect(w, r, "/login?error="+url.QueryEscape(reason), http.StatusFound)
+// next 一并带回 (若还拿得到): 用户重试或改选另一个上游后仍能回到原应用。
+func failBack(w http.ResponseWriter, r *http.Request, reason, next string) {
+	target := "/login?error=" + url.QueryEscape(reason)
+	if next != "" {
+		target += "&next=" + url.QueryEscape(next)
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }

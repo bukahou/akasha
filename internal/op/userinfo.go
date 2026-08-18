@@ -87,6 +87,8 @@ func (h *Handler) userinfo(w http.ResponseWriter, r *http.Request) {
 	// (OIDC Core §5.3.2 要求 RP 校验这点; 不一致时 RP 应当拒绝这次响应)
 	resp["sub"] = sub
 
+	// 用户资料同样不该被中间层缓存 (OIDC Core §5.3.2 建议)
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -202,6 +202,38 @@ func (h *Handler) CompleteAuthorize(w http.ResponseWriter, r *http.Request, next
 	}
 }
 
+// DenyAuthorize 把"认证没成功"的结论按规范回投给 RP (RFC 6749 §4.1.2.1)。
+//
+// 由 federation 在【下游有权知道】的失败上调用 (经 main 注入)。
+// 典型场景是账号被封禁: 重试没有意义, 换一个上游 provider 也照样进不去,
+// 把人留在 akasha 的裸页面上只会让 RP 永远不知道发生了什么 ——
+// 而 geass 用自己的页面告诉用户"该账号无法登录"显然更合适。
+//
+// 与 CompleteAuthorize 同样【重新校验】client 与白名单: 回投的前提永远是
+// "这个地址确实属于这个 client"。验不过就退回本站显示, 绝不盲跳。
+func (h *Handler) DenyAuthorize(w http.ResponseWriter, r *http.Request, next, errCode, desc string) {
+	u, err := url.Parse(next)
+	if err != nil {
+		slog.Error("停车的 authorize 请求解析失败", "err", err)
+		http.Redirect(w, r, "/login?error=internal", http.StatusFound)
+		return
+	}
+	q := u.Query()
+	req, verr := h.validateAuthorizeRequest(r.Context(), q)
+	if verr != nil {
+		// 连 client 都验不过 —— 交给 failAuthorize 自己判断能不能回投
+		h.failAuthorize(w, r, q, verr)
+		return
+	}
+	ae := &AuthorizeError{Code: errCode, Desc: desc}
+	if rerr := RedirectWithError(w, r, req.RedirectURI, ae, req.State); rerr != nil {
+		slog.Error("回投 authorize 拒绝失败", "err", rerr, "client_id", req.ClientID)
+		http.Error(w, "服务器内部错误", http.StatusInternalServerError)
+		return
+	}
+	slog.Info("回投 authorize 拒绝", "error", errCode, "client_id", req.ClientID)
+}
+
 // validateAuthorizeRequest 解析并校验 authorize 参数 + client 注册状态 + 回调白名单。
 // authorize 入口与 CompleteAuthorize 共用它, 保证"进来时"和"发 code 前"用的是同一套判据。
 func (h *Handler) validateAuthorizeRequest(ctx context.Context, q url.Values) (*AuthorizeRequest, error) {
@@ -275,6 +307,10 @@ func (h *Handler) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("签发 token", "client_id", c.ClientID)
+	// RFC 6749 §5.1 REQUIRED: token 响应装着凭证, 绝不能被任何中间层缓存。
+	// (对比 /jwks 那边发的是 public max-age —— 公钥本就该被缓存, 两者刚好相反)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, http.StatusOK, ts)
 }
 

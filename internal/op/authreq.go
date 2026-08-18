@@ -41,7 +41,6 @@ const (
 	ErrCodeUnsupportedRespType = "unsupported_response_type"
 	ErrCodeInvalidScope        = "invalid_scope"
 	ErrCodeLoginRequired       = "login_required"
-	ErrCodeInteractionRequired = "interaction_required"
 	ErrCodeServerError         = "server_error"
 	ErrCodeUnauthorizedClient  = "unauthorized_client"
 	ErrCodeAccessDenied        = "access_denied"
@@ -118,6 +117,19 @@ func hasScope(scope, want string) bool {
 		}
 	}
 	return false
+}
+
+// PromptFromNext 从停车的 "/authorize?..." 请求中取出 prompt 值。
+//
+// federation 需要它把 RP 的意图透传给上游 —— 但不该为此依赖 op 的类型,
+// 所以由 op 导出这个纯函数, 经 main 注入 (与 SafeLocalNext 同一模式)。
+// 解析失败返回空串: prompt 是可选的辅助信息, 坏了当没提供, 不该让登录失败。
+func PromptFromNext(next string) string {
+	u, err := url.Parse(next)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get("prompt")
 }
 
 // RedirectWithError 把错误回投给 RP (RFC 6749 §4.1.2.1)。

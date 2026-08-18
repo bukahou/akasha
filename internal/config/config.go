@@ -19,7 +19,8 @@ type Config struct {
 	Issuer string `env:"AKASHA_ISSUER" envDefault:"http://localhost:9100"`
 
 	// ---- 存储 ----
-	// 形如 user:pass@tcp(host:3306)/akasha?charset=utf8mb4&parseTime=True&loc=Local
+	// 形如 user:pass@tcp(host:3306)/akasha?charset=utf8mb4&parseTime=True&loc=UTC
+	// loc=UTC 而非 Local: 容器内是 UTC, 混用会让日志时间与 DB 时间对不上
 	DBDSN string `env:"AKASHA_DB_DSN,required"`
 
 	// ---- 签名 ----
@@ -41,8 +42,9 @@ type Config struct {
 	// 太短会让慢吞吞的用户白跑一趟, 太长则拉大 CSRF 攻击窗口。
 	FederationTTL time.Duration `env:"AKASHA_FEDERATION_TTL" envDefault:"10m"`
 
-	// ---- 会话 cookie ----
-	// 生产必须 true: false 时 cookie 允许走明文 HTTP, 中枢会话可被中间人窃取 = SSO 全线失守。
+	// ---- 联邦状态 cookie ----
+	// akasha 无会话, 这个开关管的是【联邦往返的签名 cookie】(state/nonce/next)。
+	// 生产必须 true: false 时它允许走明文 HTTP, 被中间人读到 state 即可发起登录 CSRF。
 	CookieSecure bool `env:"AKASHA_COOKIE_SECURE" envDefault:"false"`
 
 	// ---- TTL ----

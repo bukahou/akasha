@@ -20,6 +20,7 @@ package federation
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/bukahou/akasha/internal/account"
 )
@@ -35,12 +36,24 @@ type Provider interface {
 	// 改了它等于把所有已建立的上游身份关联作废。
 	Name() string
 
-	// AuthCodeURL 上游的授权页地址。state 防 CSRF, nonce 防 id_token 重放。
-	AuthCodeURL(state, nonce string) string
+	// AuthCodeURL 上游的授权页地址。
+	AuthCodeURL(req AuthRequest) string
 
 	// Exchange 用回调拿到的 code 向上游换取身份断言。
 	// nonce 传入是为了校验上游 id_token 里的 nonce 与本次流程一致。
 	Exchange(ctx context.Context, code, nonce string) (account.UpstreamIdentity, error)
+}
+
+// AuthRequest 一次上游跳转的参数。
+//
+// 用结构体而非位置参数, 是为了给 provider 之间的差异留余地: Google 支持
+// prompt 的全部取值, GitHub 的 OAuth 授权页则没有对应概念 —— 各实现自行
+// 翻译或忽略。将来增减字段也不必改动所有实现的签名。
+type AuthRequest struct {
+	State string // 防 CSRF, 回调时必须原样带回
+	Nonce string // 防 id_token 重放, 必须与上游 id_token 里的一致
+	// Prompt 空 = 不指定。取值同 OIDC: none / login / consent / select_account
+	Prompt string
 }
 
 // Registry provider 注册表: URL 里的 {provider} → 具体实现。
@@ -69,10 +82,14 @@ func (r *Registry) Lookup(name string) (Provider, error) {
 }
 
 // Names 已注册的上游名列表 (登录页据此渲染按钮)。
+//
+// 排序不是可有可无的: map 迭代顺序在 Go 里是随机的, 不排的话登录页上的按钮
+// 每次进程重启都可能换位置。只有一个上游时看不出来, 接第二个就会显现。
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.providers))
 	for name := range r.providers {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }

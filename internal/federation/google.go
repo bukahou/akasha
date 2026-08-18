@@ -71,8 +71,17 @@ func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURL 
 
 func (g *googleProvider) Name() string { return "google" }
 
-func (g *googleProvider) AuthCodeURL(state, nonce string) string {
-	return g.oauth.AuthCodeURL(state, oidc.Nonce(nonce))
+// AuthCodeURL 组装 Google 授权页地址。
+//
+// prompt 原样透传 —— Google 支持 none / consent / select_account / login,
+// 与 OIDC 的取值一致, 不需要翻译。它决定用户会不会看到账号选择器:
+// 不带的话, 浏览器里登着单个 Google 账号时会【静默返回那个账号】。
+func (g *googleProvider) AuthCodeURL(req AuthRequest) string {
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(req.Nonce)}
+	if req.Prompt != "" {
+		_ = append(opts, oauth2.SetAuthURLParam("prompt", req.Prompt))
+	}
+	return g.oauth.AuthCodeURL(req.State, opts...)
 }
 
 // Exchange 后信道换票: code → Google 的 token → 验 id_token → 翻译成统一断言。

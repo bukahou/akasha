@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -486,5 +487,45 @@ func TestTokenGrant_AllFieldsMapped(t *testing.T) {
 		t.Errorf("tokenGrant 现在有 %d 个字段 (原 %d)。\n"+
 			"  请确认 grantFromCode 与 grantFromRefresh 都已决定新字段怎么填,\n"+
 			"  再把这里的数字改过来 —— 漏填不会报错, 只会静默取零值", n, known)
+	}
+}
+
+// TestPromptFromNext 从停车的 authorize 请求里取 prompt (供 federation 透传给上游)。
+func TestPromptFromNext(t *testing.T) {
+	cases := map[string]string{
+		"/authorize?client_id=geass&prompt=login": "login",
+		"/authorize?prompt=select_account":        "select_account",
+		"/authorize?client_id=geass":              "",
+		"":                                        "",
+		"://malformed":                            "", // 解析失败当没提供, 不该让登录失败
+	}
+	for next, want := range cases {
+		if got := PromptFromNext(next); got != want {
+			t.Errorf("PromptFromNext(%q) = %q, 期望 %q", next, got, want)
+		}
+	}
+}
+
+// TestTokenResponse_NoStore token 响应装着凭证, 绝不能被中间层缓存 (RFC 6749 §5.1 REQUIRED)。
+//
+// 这条与 /jwks 刚好相反 —— 那边发的是 public max-age, 公钥本就该被缓存。
+// 两个端点在同一个文件里, 一眼看去容易照抄错。
+func TestTokenResponse_NoStore(t *testing.T) {
+	src, err := os.ReadFile("handler.go")
+	if err != nil {
+		t.Fatalf("读取 handler.go 失败: %v", err)
+	}
+	tokenFn := string(src)
+	i := strings.Index(tokenFn, "func (h *Handler) token(")
+	if i < 0 {
+		t.Fatal("找不到 token handler —— 函数被改名了? 请同步更新此测试")
+	}
+	body := tokenFn[i:]
+	if j := strings.Index(body, "\nfunc "); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, `"Cache-Control", "no-store"`) {
+		t.Error("token 响应没有设置 Cache-Control: no-store —— " +
+			"装着 refresh_token 的响应可被中间代理合法缓存 (RFC 6749 §5.1 REQUIRED)")
 	}
 }

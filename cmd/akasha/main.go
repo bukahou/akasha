@@ -38,7 +38,7 @@
 //
 //	下游 → /authorize (校验后停车, 原请求塞进 next)
 //	     → /login?next=... (选上游)
-//	     → /federation/{p}/start (state/nonce 进签名 cookie) → 上游
+//	     → /federation/{p}/start (state/nonce/next 进签名 cookie; prompt 透传) → 上游
 //	     → /federation/{p}/callback (验 state → 换身份 → 裁决账号)
 //	     → op.CompleteAuthorize (就地签 code, 不回跳 /authorize —— 无会话下会死循环)
 //	     → 302 回下游 redirect_uri?code=...
@@ -50,6 +50,8 @@
 //	  GET  /jwks                              公钥集 (下游验签的数据源)
 //	  GET  /authorize                         前信道: 校验后一律送去登录页
 //	  POST /token                             后信道: code/refresh → 三 token
+//	  GET  /userinfo                          Bearer 换用户资料 (实时状态)
+//	  GET  /end_session                       RP 发起登出 (无状态可清, 只管送回)
 //	  GET  /health                            存活探针
 //	login 包 (柜台, 人读):
 //	  GET  /       说明页 (这是中枢, 请从应用发起登录)
@@ -108,7 +110,7 @@ func main() {
 	// ⑤ 装配 — 从最底层往上, 顺序即依赖方向
 
 	// account: 身份权威。repo 给 op 直连 (签 token 时取用户 claims),
-	// svc 给 login 用 (密码校验/认亲建号) — 两个消费者要的粒度不同, 故都暴露。
+	// svc 给 federation 用 (上游身份裁决 + 建号) — 两个消费者要的粒度不同, 故都暴露。
 	accountRepo := account.NewRepository(db)
 	accountSvc := account.NewService(accountRepo)
 
@@ -116,7 +118,7 @@ func main() {
 	clientReg := client.NewRegistry(db)
 
 	// op: 协议核心。issuer 是写进每张 JWT 的 iss (协议层身份, 定了不改);
-	// 四个 TTL 决定 code/token/会话的生命周期。
+	// 四个 TTL 决定 code 与三种 token 的生命周期 (无会话, 故无会话 TTL)。
 	opSvc := op.NewService(op.NewRepository(db), km, accountRepo, cfg.Issuer, cfg.PairwiseSalt, op.TTLConfig{
 		IDToken:     cfg.IDTokenTTL,
 		AccessToken: cfg.AccessTokenTTL,
@@ -149,9 +151,14 @@ func main() {
 		slog.Error("初始化登录页失败", "err", err)
 		os.Exit(1)
 	}
-	// safeNext 由 main 注入, 让 federation 不必依赖 op (login 包为此直接 import 了 op,
-	// 造成计划外的依赖方向; 这里用函数注入避开)
-	fedHandler := federation.NewHandler(providerRegistry, accountSvc, stateKeeper, opHandler.CompleteAuthorize, op.SafeLocalNext)
+	// op 的四项能力经 bridge 注入, 让 federation 不必依赖 op
+	// (login 包为复用其中一个函数直接 import 了 op, 造成计划外的依赖方向; 这里避开)
+	fedHandler := federation.NewHandler(providerRegistry, accountSvc, stateKeeper, federation.OPBridge{
+		Complete: opHandler.CompleteAuthorize,
+		Deny:     opHandler.DenyAuthorize,
+		SafeNext: op.SafeLocalNext,
+		Prompt:   op.PromptFromNext,
+	})
 
 	// ⑥ 路由 — 各 feature 自治注册自己的端点 (加端点只改对应包, main 不动)
 	mux := http.NewServeMux()

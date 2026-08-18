@@ -68,10 +68,11 @@ func safeNext(next string) string {
 // 只认白名单里的原因码, 不直接回显 query 参数 —— 否则攻击者可构造
 // /login?error=<任意文案> 伪造提示 (例如"请致电 XXX 解锁账号"), 借可信域名行骗。
 var errorMsgByCode = map[string]string{
-	"state":    "登录会话已失效或超时, 请重新登录",
-	"upstream": "第三方登录失败, 请稍后重试",
-	"banned":   "账号已封禁",
-	"internal": "服务器内部错误, 请稍后重试",
+	"cancelled": "登录已取消, 可重新选择登录方式",
+	"state":     "登录会话已失效或超时, 请重新登录",
+	"upstream":  "第三方登录失败, 请稍后重试",
+	"banned":    "账号已封禁",
+	"internal":  "服务器内部错误, 请稍后重试",
 }
 
 func safeErrorMsg(code string) string {
