@@ -17,7 +17,7 @@ import (
 // 2026-08-17 的审计复盘发现: 首轮审计把「依赖方向」判为符合项, 判据写的是
 // "单向且实测无环"。无环这部分没错, 但真正该查的是【是否符合声明的架构】——
 // login → op 这条计划外依赖当时已经存在, 且 CLAUDE.md 里就标着 ⚠️,
-// 审计却没回头对照。
+// 审计却没回头对照。(那条依赖已于 2026-08-18 消除, 但教训留在这里。)
 //
 // 无环 ≠ 符合设计。人来查这类东西, 判据的措辞决定了会去看什么;
 // 机器不会看漏, 也不会因为"上次看过了"而跳过。
@@ -48,11 +48,10 @@ var declaredDeps = map[string][]string{
 	// 它需要的 SafeLocalNext 与 CompleteAuthorize 都由 main 注入
 	"federation": {"account"},
 
-	// ⚠️ login → op 是【计划外】依赖: 为复用 op.SafeLocalNext 一个函数而产生。
-	// federation 后来遇到同样需求时改用了函数注入, login 还没跟上 ——
-	// 同一个问题两种解法并存。处置方案见 docs/tasks/active/polish-tasks.md,
-	// 待拍板。此处如实登记现状, 不假装它不存在。
-	"login": {"op"},
+	// 托管页是纯渲染器, 不依赖任何内部包。
+	// 它需要的 SafeLocalNext 与 federation 一样由 main 注入 ——
+	// 曾经这里直接 import 了 op (计划外偏差), 2026-08-18 拍板改为注入。
+	"login": {},
 }
 
 const internalPrefix = "github.com/bukahou/akasha/internal/"

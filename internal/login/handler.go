@@ -2,8 +2,6 @@ package login
 
 import (
 	"net/http"
-
-	"github.com/bukahou/akasha/internal/op"
 )
 
 // Handler 托管柜台页 —— akasha 唯一面向人类的表面。
@@ -13,14 +11,24 @@ import (
 type Handler struct {
 	render    *renderer
 	providers []string // 上游名列表, 仅用于渲染按钮 (本包不与 federation 包耦合)
+	// safeNext 校验回跳目标是否为本站合法断点, 由装配方注入。
+	//
+	// 这个判据属于 op (它认得自己的 /authorize 端点长什么样), 但本包不该为了
+	// 一个谓词就 import 整个协议核心 —— 那条依赖曾真实存在过 (2026-08-18 移除),
+	// 而 federation 遇到同样需求时用的就是注入。同一个问题两种解法并存,
+	// 比两个都错更让人困惑。
+	//
+	// 代价是给一个只有一个实现的纯函数做注入, 确实有仪式成分;
+	// 换来的是本包【不依赖任何内部包】—— 一个什么都不知道的渲染器最好推理。
+	safeNext func(string) bool
 }
 
-func NewHandler(providers []string) (*Handler, error) {
+func NewHandler(providers []string, safeNext func(string) bool) (*Handler, error) {
 	rd, err := newRenderer()
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{render: rd, providers: providers}, nil
+	return &Handler{render: rd, providers: providers, safeNext: safeNext}, nil
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -36,7 +44,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // next 是停车的 authorize 断点 —— 没有它, 这次登录就没有归宿 (见 showNotice)。
 func (h *Handler) showLogin(w http.ResponseWriter, r *http.Request) {
 	h.render.renderLogin(w, http.StatusOK, loginPageData{
-		Next:      safeNext(r.URL.Query().Get("next")),
+		Next:      h.sanitizeNext(r.URL.Query().Get("next")),
 		ErrorMsg:  safeErrorMsg(r.URL.Query().Get("error")),
 		Providers: h.providers,
 	})
@@ -55,9 +63,9 @@ func (h *Handler) showNotice(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// safeNext 只放行本站 /authorize 断点 (防开放重定向); 其余一律清空。
-func safeNext(next string) string {
-	if op.SafeLocalNext(next) {
+// sanitizeNext 只放行本站合法断点 (防开放重定向); 其余一律清空。
+func (h *Handler) sanitizeNext(next string) string {
+	if h.safeNext(next) {
 		return next
 	}
 	return ""

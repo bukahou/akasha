@@ -33,8 +33,8 @@ type Handler struct {
 	registry *Registry
 	accounts *account.Service
 	keeper   *StateKeeper
-	// op 侧的能力全部由装配方注入, 本包不 import op ——
-	// login 包为复用一个函数直接 import 了 op, 造成计划外的依赖方向, 这里不重蹈覆辙。
+	// op 侧的能力全部由装配方注入, 本包不 import op。
+	// login 包同样如此 (2026-08-18 起) —— 两个消费者一种机制。
 	op OPBridge
 }
 

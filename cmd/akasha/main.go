@@ -27,7 +27,7 @@
 //
 //	op         → keys / client / account   (协议层调所有下层)
 //	federation → account                   (上游 broker)
-//	login      → op                        (⚠️ 计划外, 为复用 SafeLocalNext)
+//	login      → 无                        (纯渲染器; op 的判据经注入送达)
 //	account    → 无                        (身份权威在最底层, 不知道任何人)
 //
 // op 与 federation 是同一套 OIDC 概念的镜像两侧: op 发 code 给下游 (akasha 当
@@ -145,8 +145,10 @@ func main() {
 
 	// handler 层: 只做 HTTP 编解码 + 调 service, 不含业务判断
 	opHandler := op.NewHandler(opSvc, clientReg, km, cfg.Issuer)
-	// login 的构造会解析 embed 模板 — 模板语法错误在启动时暴露, 而不是等用户点登录才 500
-	loginHandler, err := login.NewHandler(providerRegistry.Names())
+	// login 的构造会解析 embed 模板 — 模板语法错误在启动时暴露, 而不是等用户点登录才 500。
+	// safeNext 与 federation 那边注入的是同一个函数: 判据属于 op, 但两个消费者
+	// 都不该为一个谓词去 import 整个协议核心。
+	loginHandler, err := login.NewHandler(providerRegistry.Names(), op.SafeLocalNext)
 	if err != nil {
 		slog.Error("初始化登录页失败", "err", err)
 		os.Exit(1)
