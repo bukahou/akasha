@@ -214,20 +214,48 @@ func TestRevokeFamily_ScopedToFamily(t *testing.T) {
 		t.Errorf("本家族只撤销了 %d 条, 期望 2 条", got)
 	}
 
-	// 幂等: 再撤一次应当 0 行（已撤销的不重复计数）
+	// 幂等: 再撤一次应当 0 行
+	//
+	// ⚠️ 这条断言【抓不住】"WHERE 漏了 revoked = 0"这种变异 —— MySQL 默认
+	// 统计的是【实际改变的行数】而非匹配行数, 把 revoked=1 再写成 1 不算改变。
+	// 也就是说那个条件对结果没有影响, 是个等价变异。留着它是为了让 SQL 表达
+	// 意图 (只动还有效的) 并让索引更好用, 不是为了正确性。
 	if again, _ := repo.RevokeFamily(context.Background(), hashOpaque(codeB)); again != 0 {
-		t.Errorf("重复撤销返回 %d 行, 期望 0 —— WHERE 漏了 revoked = 0", again)
+		t.Errorf("重复撤销返回 %d 行, 期望 0", again)
 	}
 }
 
 // TestRevokeFamily_EmptyIDIsNoop 空 family_id 绝不能变成"撤销所有 family_id 为空的行"。
+//
+// # 为什么要专门插一条空 family_id 的脏数据
+//
+// 第一版只断言"不波及正常家族"—— 但正常家族的 family_id 都非空, 去掉短路
+// 之后查询变成 WHERE family_id = ” 同样匹配不到它们, 测试照常通过。
+// 变异测试当场暴露了这一点: 断言测的是【这个守卫不存在时也成立】的事。
+//
+// 守卫真正防的是"库里存在 family_id 为空的行"这种情形 (历史数据 / 手工插入 /
+// 将来某条路径漏传)。要测它, 就必须让那种行真的存在。
 func TestRevokeFamily_EmptyIDIsNoop(t *testing.T) {
 	db := purgeTestDB(t)
 	repo := NewRepository(db)
 	_, _, tag := seedFixture(t, db, repo)
 
+	// 脏数据: family_id 为空的 refresh
+	orphanTag := tag + "-orphan"
+	if err := repo.InsertRefresh(context.Background(), &RefreshToken{
+		TokenHash: hashOpaque(orphanTag), FamilyID: "", UserID: 1,
+		ClientID: orphanTag, Scope: "openid", ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("插入空 family_id 的行失败: %v", err)
+	}
+	t.Cleanup(func() { db.Where("client_id = ?", orphanTag).Delete(&RefreshToken{}) })
+
 	if n, err := repo.RevokeFamily(context.Background(), ""); err != nil || n != 0 {
-		t.Errorf("空 family_id 撤销了 %d 条 (err=%v), 期望 0 且无副作用", n, err)
+		t.Errorf("空 family_id 撤销了 %d 条 (err=%v), 期望 0 且无副作用\n"+
+			"  少了短路守卫, 它会变成「撤销所有 family_id 为空的行」", n, err)
+	}
+	if got := countRevoked(t, db, orphanTag); got != 0 {
+		t.Error("空 family_id 的行被撤销了 —— 守卫失效")
 	}
 	if got := countRevoked(t, db, tag); got != 0 {
 		t.Errorf("空 family_id 波及了正常家族: %d 条", got)
