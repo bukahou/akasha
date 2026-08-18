@@ -11,7 +11,8 @@
 //	④ 密钥: 加载 RSA 私钥并把公钥登记进 signing_keys (JWKS 数据源)
 //	⑤ 装配: 各 feature 组件按依赖方向 new 出来
 //	⑥ 路由: 各 feature 自治 Register(mux)
-//	⑦ 运行: 阻塞直到信号, 10s 优雅关停
+//	⑦ 清理: 后台 goroutine 定期删除过期的一次性凭证
+//	⑧ 运行: 阻塞直到信号, 10s 优雅关停
 //
 // # 无状态设计 (2026-08-16 定案)
 //
@@ -123,7 +124,8 @@ func main() {
 
 	// op: 协议核心。issuer 是写进每张 JWT 的 iss (协议层身份, 定了不改);
 	// 四个 TTL 决定 code 与三种 token 的生命周期 (无会话, 故无会话 TTL)。
-	opSvc := op.NewService(op.NewRepository(db), km, accountRepo, cfg.Issuer, cfg.PairwiseSalt, op.TTLConfig{
+	opRepo := op.NewRepository(db)
+	opSvc := op.NewService(opRepo, km, accountRepo, cfg.Issuer, cfg.PairwiseSalt, op.TTLConfig{
 		IDToken:     cfg.IDTokenTTL,
 		AccessToken: cfg.AccessTokenTTL,
 		Refresh:     cfg.RefreshTTL,
@@ -193,7 +195,13 @@ func main() {
 	// CORS 只对不依赖 cookie 的端点放行 (见 server.corsAllowedPaths)。
 	handler := server.SecurityHeaders(cfg.Issuer, server.CORS(server.LimitBody(mux)))
 
-	// ⑦ 运行 — 阻塞直到 SIGINT/SIGTERM, 然后 10s 窗口优雅关停 (让在途的 token 兑换跑完)
+	// ⑦ 后台清理 — auth_codes 与 refresh_tokens 只增不减, 过期行需要有人删。
+	//    随进程生命周期: server.Run 返回后 cancel 触发, goroutine 自行退出。
+	janitorCtx, stopJanitor := context.WithCancel(context.Background())
+	defer stopJanitor()
+	go op.NewJanitor(opRepo).Run(janitorCtx)
+
+	// ⑧ 运行 — 阻塞直到 SIGINT/SIGTERM, 然后 10s 窗口优雅关停 (让在途的 token 兑换跑完)
 	if err := server.Run(cfg.Addr, handler); err != nil {
 		slog.Error("服务退出", "err", err)
 		os.Exit(1)

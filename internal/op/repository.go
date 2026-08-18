@@ -203,6 +203,32 @@ func (r *Repository) LookupPairwiseSub(ctx context.Context, clientID, sub string
 	return rec.UserID, nil
 }
 
+// PurgeExpired 删除早已过期的一次性凭证, 返回两表各删了多少行。
+//
+// ⚠️ 这是本仓唯一的 DELETE。WHERE 写错的后果不是报错, 而是【把还在用的
+// refresh token 删掉】—— 所有用户在下次刷新时被静默登出, 且无从追溯。
+// 所以判据写得保守: 只删【已经过了保留期】的行, now 由调用方传入以便测试。
+//
+// 两条 DELETE 不放在一个事务里: 它们互不相关, 前者成功后者失败也没有一致性
+// 问题, 下一轮会把剩下的清掉。
+func (r *Repository) PurgeExpired(ctx context.Context, now time.Time) (codes, refreshes int64, err error) {
+	res := r.db.WithContext(ctx).
+		Where("expires_at < ?", now.Add(-authCodeRetention)).
+		Delete(&AuthCode{})
+	if res.Error != nil {
+		return 0, 0, res.Error
+	}
+	codes = res.RowsAffected
+
+	res = r.db.WithContext(ctx).
+		Where("expires_at < ?", now.Add(-refreshRetention)).
+		Delete(&RefreshToken{})
+	if res.Error != nil {
+		return codes, 0, res.Error
+	}
+	return codes, res.RowsAffected, nil
+}
+
 func hashOpaque(v string) string {
 	sum := sha256.Sum256([]byte(v))
 	return hex.EncodeToString(sum[:])
