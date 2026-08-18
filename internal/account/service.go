@@ -59,17 +59,7 @@ func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdenti
 	if fi, err := s.repo.GetIdentity(ctx, id.Provider, id.Subject); err != nil {
 		return nil, err
 	} else if fi != nil {
-		u, err := s.repo.GetUserByID(ctx, fi.UserID)
-		if err != nil {
-			return nil, err
-		}
-		if u == nil {
-			return nil, fmt.Errorf("身份关联指向的用户不存在: user_id=%d", fi.UserID)
-		}
-		if u.Status == StatusBanned {
-			return nil, ErrUserBanned
-		}
-		return u, nil
+		return s.loadActiveUser(ctx, fi.UserID)
 	}
 
 	// ② 新面孔一律建号 (不查已有账号, 不认亲)
@@ -90,22 +80,48 @@ func (s *Service) ResolveUpstreamIdentity(ctx context.Context, id UpstreamIdenti
 		AvatarURL:     id.AvatarURL,
 		Status:        StatusActive,
 	}
-	if err := s.repo.InsertUser(ctx, user); err != nil {
-		return nil, fmt.Errorf("联邦建号失败: %w", err)
-	}
-	slog.Info("联邦建号", "provider", id.Provider, "user_id", user.ID, "username", username)
-
-	// ③ 建关联: 之后永远走 ①
+	// ③ 建号与建关联在同一个事务里 —— 两步同生共死, 不留孤儿 user 行
 	fi := &FederatedIdentity{
-		UserID:   user.ID,
 		Provider: id.Provider,
 		Subject:  id.Subject,
 		Email:    id.Email,
 	}
-	if err := s.repo.InsertIdentity(ctx, fi); err != nil {
-		return nil, fmt.Errorf("建身份关联失败: %w", err)
+	if err := s.repo.CreateUserWithIdentity(ctx, user, fi); err != nil {
+		// 并发首登: 另一个请求抢先建好了同一个上游身份, 我们这笔撞唯一索引整体回滚。
+		// 此时正确的行为是【复用它建好的那个账号】, 而不是把 500 抛给用户 ——
+		// 两个请求本来就在为同一个人建号, 谁先谁后无所谓。
+		//
+		// 不去匹配驱动特定的错误码 (那随 MySQL/TiDB 版本漂移), 而是直接重查:
+		// 关联现在存在 = 有人赢了这场竞争, 事实比错误码可靠。
+		//
+		// 重查【必然能查到】而不是碰运气: 撞唯一索引的一方会被数据库阻塞到
+		// 先来者提交或回滚为止, 所以拿到 1062 的那一刻, 赢家的事务 (含 identity 行)
+		// 已经提交完毕。实测中撞的多是 users.uk_username —— 并发请求邮箱相同,
+		// 生成的用户名基名也相同 —— 同一套补偿逻辑照样成立。
+		if existing, qerr := s.repo.GetIdentity(ctx, id.Provider, id.Subject); qerr == nil && existing != nil {
+			slog.Info("并发首登, 复用另一请求建好的账号",
+				"provider", id.Provider, "user_id", existing.UserID)
+			return s.loadActiveUser(ctx, existing.UserID)
+		}
+		return nil, fmt.Errorf("联邦建号失败: %w", err)
 	}
+	slog.Info("联邦建号", "provider", id.Provider, "user_id", user.ID, "username", username)
 	return user, nil
+}
+
+// loadActiveUser 取用户并校验可用性 (查不到 / 已封禁都不该继续)。
+func (s *Service) loadActiveUser(ctx context.Context, userID int64) (*User, error) {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, fmt.Errorf("身份关联指向的用户不存在: user_id=%d", userID)
+	}
+	if u.Status == StatusBanned {
+		return nil, ErrUserBanned
+	}
+	return u, nil
 }
 
 // DeriveInternalID 由上游身份派生内部稳定标识。
