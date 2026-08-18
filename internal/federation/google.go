@@ -79,7 +79,7 @@ func (g *googleProvider) Name() string { return "google" }
 func (g *googleProvider) AuthCodeURL(req AuthRequest) string {
 	opts := []oauth2.AuthCodeOption{oidc.Nonce(req.Nonce)}
 	if req.Prompt != "" {
-		_ = append(opts, oauth2.SetAuthURLParam("prompt", req.Prompt))
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", req.Prompt))
 	}
 	return g.oauth.AuthCodeURL(req.State, opts...)
 }
