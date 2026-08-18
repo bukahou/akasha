@@ -21,6 +21,8 @@
     .brand { text-align: center; margin-bottom: 28px; }
     .brand h1 { font-size: 26px; letter-spacing: 4px; color: #c4b5fd; font-weight: 700; }
     .brand p  { font-size: 12px; color: #8b8b96; margin-top: 6px; }
+    .brand .destination { margin-top: 12px; font-size: 13px; color: #a1a1aa; }
+    .brand .destination strong { color: #c4b5fd; font-weight: 600; }
     label { display: block; font-size: 13px; color: #a1a1aa; margin: 14px 0 6px; }
     input {
       width: 100%; height: 42px; padding: 0 14px; font-size: 15px;
@@ -58,6 +60,7 @@
     <div class="brand">
       <h1>AKASHA</h1>
       <p>bukahou 统一身份</p>
+      {{if .ClientName}}<p class="destination">继续前往 <strong>{{.ClientName}}</strong></p>{{end}}
     </div>
     {{if .ErrorMsg}}<div class="error">{{.ErrorMsg}}</div>{{end}}
 

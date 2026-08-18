@@ -231,6 +231,32 @@ func (h *Handler) DenyAuthorize(w http.ResponseWriter, r *http.Request, next, er
 	slog.Info("回投 authorize 拒绝", "error", errCode, "client_id", req.ClientID)
 }
 
+// ClientNameFromNext 由停车的 authorize 请求取出该 client 的展示名。
+//
+// 登录页拿它渲染"继续前往 xx"。这【不只是 UX】—— 让用户看见自己正在登录到
+// 哪个应用是反钓鱼的一环: 攻击者诱导你点一个看似 atlhyper 的链接, 页面上却
+// 写着 geass, 那一刻是唯一能察觉的机会。
+//
+// 由 op 提供并经 main 注入, 因为查 clients 表是它的事 ——
+// login 是个不依赖任何内部包的渲染器, 不该为此认识数据库。
+//
+// 任何失败都返回空串: 名字缺了页面少一行字而已, 绝不能让登录失败。
+func (h *Handler) ClientNameFromNext(ctx context.Context, next string) string {
+	u, err := url.Parse(next)
+	if err != nil {
+		return ""
+	}
+	clientID := u.Query().Get("client_id")
+	if clientID == "" {
+		return ""
+	}
+	c, err := h.clients.FindByClientID(ctx, clientID)
+	if err != nil {
+		return ""
+	}
+	return c.Name
+}
+
 // validateAuthorizeRequest 解析并校验 authorize 参数 + client 注册状态 + 回调白名单。
 // authorize 入口与 CompleteAuthorize 共用它, 保证"进来时"和"发 code 前"用的是同一套判据。
 func (h *Handler) validateAuthorizeRequest(ctx context.Context, q url.Values) (*AuthorizeRequest, error) {

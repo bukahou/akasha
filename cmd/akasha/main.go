@@ -154,7 +154,11 @@ func main() {
 	// login 的构造会解析 embed 模板 — 模板语法错误在启动时暴露, 而不是等用户点登录才 500。
 	// safeNext 与 federation 那边注入的是同一个函数: 判据属于 op, 但两个消费者
 	// 都不该为一个谓词去 import 整个协议核心。
-	loginHandler, err := login.NewHandler(providerRegistry.Names(), op.SafeLocalNext)
+	loginHandler, err := login.NewHandler(login.Deps{
+		Providers:  providerRegistry.Names(),
+		SafeNext:   op.SafeLocalNext,
+		ClientName: opHandler.ClientNameFromNext,
+	})
 	if err != nil {
 		slog.Error("初始化登录页失败", "err", err)
 		os.Exit(1)

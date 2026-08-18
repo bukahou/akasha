@@ -1,6 +1,7 @@
 package login
 
 import (
+	"context"
 	"net/http"
 )
 
@@ -8,27 +9,33 @@ import (
 //
 // 它只做一件事: 把用户引向某个上游 provider。没有密码表单 (2026-08-09 无密码定案),
 // 也没有登出 (2026-08-16 无会话定案 —— 没有登录态自然无从登出)。
-type Handler struct {
-	render    *renderer
-	providers []string // 上游名列表, 仅用于渲染按钮 (本包不与 federation 包耦合)
-	// safeNext 校验回跳目标是否为本站合法断点, 由装配方注入。
-	//
-	// 这个判据属于 op (它认得自己的 /authorize 端点长什么样), 但本包不该为了
-	// 一个谓词就 import 整个协议核心 —— 那条依赖曾真实存在过 (2026-08-18 移除),
-	// 而 federation 遇到同样需求时用的就是注入。同一个问题两种解法并存,
-	// 比两个都错更让人困惑。
-	//
-	// 代价是给一个只有一个实现的纯函数做注入, 确实有仪式成分;
-	// 换来的是本包【不依赖任何内部包】—— 一个什么都不知道的渲染器最好推理。
-	safeNext func(string) bool
+// Deps 本包需要、却不该自己知道的东西, 由装配方注入。
+//
+// 全部经注入而非 import, 换来的是本包【不依赖任何内部包】——
+// 一个什么都不知道的渲染器最好推理。代价是给只有一个实现的函数做注入,
+// 确实有仪式成分; 但 login → op 那条依赖曾真实存在过 (2026-08-18 移除),
+// 而 federation 遇到同样需求时用的就是注入 —— 同一个问题一种解法。
+type Deps struct {
+	// Providers 上游名列表, 仅用于渲染按钮 (本包不与 federation 包耦合)
+	Providers []string
+	// SafeNext 校验回跳目标是否为本站合法断点 (判据属于 op, 它认得自己的端点)
+	SafeNext func(next string) bool
+	// ClientName 由停车的请求取出目标应用的展示名, 用于渲染"继续前往 xx"。
+	// 拿不到就返回空串, 页面少一行字, 绝不能让登录失败。
+	ClientName func(ctx context.Context, next string) string
 }
 
-func NewHandler(providers []string, safeNext func(string) bool) (*Handler, error) {
+type Handler struct {
+	render *renderer
+	deps   Deps
+}
+
+func NewHandler(deps Deps) (*Handler, error) {
 	rd, err := newRenderer()
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{render: rd, providers: providers, safeNext: safeNext}, nil
+	return &Handler{render: rd, deps: deps}, nil
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
@@ -43,10 +50,18 @@ func (h *Handler) Register(mux *http.ServeMux) {
 // error 由联邦回调失败时回跳带入 (见 federation.failBack)。
 // next 是停车的 authorize 断点 —— 没有它, 这次登录就没有归宿 (见 showNotice)。
 func (h *Handler) showLogin(w http.ResponseWriter, r *http.Request) {
+	next := h.sanitizeNext(r.URL.Query().Get("next"))
+	// 只在 next 合法时才查名字 —— 拿一个没过白名单的 next 去反查, 等于让
+	// 任意构造的 client_id 都能触发一次数据库查询
+	var clientName string
+	if next != "" && h.deps.ClientName != nil {
+		clientName = h.deps.ClientName(r.Context(), next)
+	}
 	h.render.renderLogin(w, http.StatusOK, loginPageData{
-		Next:      h.sanitizeNext(r.URL.Query().Get("next")),
-		ErrorMsg:  safeErrorMsg(r.URL.Query().Get("error")),
-		Providers: h.providers,
+		Next:       next,
+		ErrorMsg:   safeErrorMsg(r.URL.Query().Get("error")),
+		Providers:  h.deps.Providers,
+		ClientName: clientName,
 	})
 }
 
@@ -65,7 +80,7 @@ func (h *Handler) showNotice(w http.ResponseWriter, r *http.Request) {
 
 // sanitizeNext 只放行本站合法断点 (防开放重定向); 其余一律清空。
 func (h *Handler) sanitizeNext(next string) string {
-	if h.safeNext(next) {
+	if h.deps.SafeNext(next) {
 		return next
 	}
 	return ""

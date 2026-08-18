@@ -28,9 +28,13 @@ func newRenderer() (*renderer, error) {
 type loginPageData struct {
 	Next     string // 登录成功后的回跳 (/authorize?...)
 	ErrorMsg string
-	// Providers 已注册的上游 (google/...)。无密码定案后这才是正式入口,
-	// 下面的密码表单是 M1 遗留的临时入口, M2 联邦跑通后移除。
+	// Providers 已注册的上游 (google/...)
 	Providers []string
+	// ClientName 目标应用的展示名 (clients.name)。空串时不渲染那一行。
+	//
+	// ★ 反钓鱼: 攻击者诱导你点一个看似 atlhyper 的链接, 页面上却写着 geass ——
+	// 那一刻是用户唯一能察觉的机会。所以它不只是 UX。
+	ClientName string
 }
 
 // providerLabel 上游名 → 按钮文案。未知 provider 原样显示, 不至于渲染出空按钮。
