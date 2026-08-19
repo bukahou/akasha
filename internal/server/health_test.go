@@ -62,7 +62,10 @@ func TestReadiness_FailsOnBrokenDependency(t *testing.T) {
 //
 // 探针端点在集群里是可达的, 而数据库错误里可能带 DSN 片段 (主机名、用户名)。
 func TestReadiness_NeverLeaksErrorDetail(t *testing.T) {
-	const secret = "user:passw0rd@tcp(10.0.0.5:3306)"
+	// 用 RFC 2606 保留的 .invalid 域, 让它一眼可辨是假的 ——
+	// 这串东西会随代码进公开仓, 长得像真凭证会白白触发扫描器告警,
+	// 也可能让读到的人以为泄漏了什么。
+	const secret = "user:REDACTED@tcp(db.example.invalid:3306)"
 	mux := healthMux(Check{Name: "database", Probe: func(context.Context) error {
 		return errors.New("dial failed: " + secret)
 	}})
