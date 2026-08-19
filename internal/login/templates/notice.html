@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Akasha</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, #241b3d, #0f0d17 60%);
+      color: #e9e6f5;
+    }
+    .card {
+      width: 100%; max-width: 380px; padding: 36px 32px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+      text-align: center;
+    }
+    h1 { margin: 0; font-size: 26px; letter-spacing: 6px; font-weight: 700; }
+    .sub { margin: 6px 0 22px; font-size: 13px; color: #a9a3c4; }
+    p { margin: 0; font-size: 13px; line-height: 1.85; color: #a9a3c4; }
+    .ok {
+      margin-bottom: 16px; padding: 12px 14px; font-size: 13px; line-height: 1.7;
+      color: #86efac; background: rgba(34,197,94,0.1);
+      border: 1px solid rgba(34,197,94,0.3); border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>AKASHA</h1>
+    <div class="sub">bukahou 统一身份</div>
+
+    {{if .Authenticated}}
+      <div class="ok">身份已验证 —— 但没有应用在等待这次登录。</div>
+    {{end}}
+
+    <p>
+      这里是身份中枢，不提供任何业务功能。<br>
+      请从需要登录的应用发起，akasha 会在完成验证后把你送回去。
+    </p>
+  </div>
+</body>
+</html>

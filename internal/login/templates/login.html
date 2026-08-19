@@ -21,6 +21,8 @@
     .brand { text-align: center; margin-bottom: 28px; }
     .brand h1 { font-size: 26px; letter-spacing: 4px; color: #c4b5fd; font-weight: 700; }
     .brand p  { font-size: 12px; color: #8b8b96; margin-top: 6px; }
+    .brand .destination { margin-top: 12px; font-size: 13px; color: #a1a1aa; }
+    .brand .destination strong { color: #c4b5fd; font-weight: 600; }
     label { display: block; font-size: 13px; color: #a1a1aa; margin: 14px 0 6px; }
     input {
       width: 100%; height: 42px; padding: 0 14px; font-size: 15px;
@@ -39,6 +41,18 @@
       color: #fca5a5; background: rgba(220,38,38,0.12);
       border: 1px solid rgba(220,38,38,0.35); border-radius: 10px;
     }
+    .federated {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 44px; margin-bottom: 10px; font-size: 15px; font-weight: 600;
+      color: #e9e6f5; text-decoration: none;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 10px;
+    }
+    .federated:hover { background: rgba(255,255,255,0.1); }
+    .hint {
+      margin-top: 20px; font-size: 12px; line-height: 1.7;
+      color: #8b87a3; text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -46,16 +60,15 @@
     <div class="brand">
       <h1>AKASHA</h1>
       <p>bukahou 统一身份</p>
+      {{if .ClientName}}<p class="destination">继续前往 <strong>{{.ClientName}}</strong></p>{{end}}
     </div>
-    <form method="post" action="/login">
-      <input type="hidden" name="next" value="{{.Next}}">
-      <label for="login_name">用户名 / 邮箱</label>
-      <input id="login_name" name="login_name" autocomplete="username" autofocus required>
-      <label for="password">密码</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
-      {{if .ErrorMsg}}<div class="error">{{.ErrorMsg}}</div>{{end}}
-      <button type="submit">登录</button>
-    </form>
+    {{if .ErrorMsg}}<div class="error">{{.ErrorMsg}}</div>{{end}}
+
+    {{range .Providers}}
+      <a class="federated" href="/federation/{{.}}/start?next={{$.Next | urlquery}}">{{$.Label .}}</a>
+    {{end}}
+
+    <p class="hint">akasha 不保存密码，登录完全由上述第三方完成。</p>
   </div>
 </body>
 </html>

@@ -1,0 +1,107 @@
+name: test
+
+# 每次推送与 PR 都跑。akasha 是身份中枢, 一个没被发现的回归影响的是所有接入应用,
+# 所以这里的门槛设得比普通服务严: 格式、静态检查、测试、依赖漏洞全部要过。
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# 同一分支上新的推送取消仍在跑的旧任务 —— 旧结果已无意义, 白占额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 跟着 go.mod 的版本走, 不在两处各写一遍版本号
+          go-version-file: go.mod
+          cache: true
+
+      - name: 格式检查
+        # gofmt -l 列出未格式化的文件; 非空即失败。
+        # 用它而不是 gofmt -w: CI 的职责是发现问题, 不是替人改代码
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化:"
+            echo "$unformatted"
+            gofmt -d $unformatted
+            exit 1
+          fi
+
+      - name: 构建
+        run: go build ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 测试
+        # -race 检测数据竞争: 本服务的原子消费与并发建号都依赖竞态正确性
+        # -count=1 禁用缓存, 确保每次真的跑
+        run: go test -race -count=1 ./...
+
+  # 本仓公开且身份是 IdP, 误提交一次密钥的代价远高于这个 job 的成本。
+  # 2026-08-16 的人工审查发现过真实用户标识被当作测试常量提交, 故把检查自动化。
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 要看全部历史, 不只是最新一次提交
+
+      - name: 密钥材料不得入库
+        run: |
+          tracked=$(git ls-files | grep -iE '\.(pem|key|p12|pfx)$' || true)
+          if [ -n "$tracked" ]; then
+            echo "以下密钥材料被 git 跟踪:"; echo "$tracked"; exit 1
+          fi
+          echo "✅ 无密钥文件被跟踪"
+
+      - name: 历史中不得出现私钥内容
+        run: |
+          # 两处刻意的写法:
+          # ① 排除本目录 —— 否则这条规则的模式字符串会匹配到它自己
+          #    (首次运行就是这么失败的: 规则把自身也纳入了检查范围)
+          # ② 匹配完整的 PEM 分隔符而非 "BEGIN.*PRIVATE", 既更精确
+          #    (真实私钥一定带 -----), 也不会被讨论私钥的注释文字误伤
+          if git log -p --all -- ':(exclude).github/workflows' \
+             | grep -qE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----'; then
+            echo "git 历史中发现私钥内容 —— 需轮换该密钥并重写历史"
+            exit 1
+          fi
+          echo "✅ 历史中无私钥"
+
+      - name: 不得出现内网地址
+        # 本仓是公开的; 集群拓扑属于 CLAUDE.md 与 config 私有仓的内容
+        run: |
+          hits=$(git grep -nE '192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+' \
+                 -- . ':!*_test.go' || true)
+          if [ -n "$hits" ]; then
+            echo "发现内网地址:"; echo "$hits"; exit 1
+          fi
+          echo "✅ 无内网地址"
+
+  vuln:
+    # 与 test 并行 —— 它依赖外部漏洞库, 偶尔会慢或抖动, 不该拖住主流程
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 依赖漏洞扫描
+        # govulncheck 只报告【实际被调用到】的漏洞路径, 噪音远低于单纯比对版本号。
+        # 2026-08-16 的审计正是靠它发现 6 个标准库漏洞
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

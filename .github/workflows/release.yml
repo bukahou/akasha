@@ -1,0 +1,68 @@
+name: release
+
+# 由 tag 触发而非推送 main —— 发版是一个需要人主动决定的动作。
+# 打 tag: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: bukahou/akasha
+
+jobs:
+  # 发版前把测试再跑一遍。tag 通常打在已过 CI 的提交上, 但"通常"不够 ——
+  # 一个没跑过测试的镜像被推到生产的代价远大于这一分钟。
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  image:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 集群是 amd64 (desk×3) + aarch64 (raspi×4) 混合架构,
+      # 单架构镜像会让一半节点调度失败
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # v0.1.0 → 0.1.0 / 0.1 / latest
+          # 下游清单钉具体版本, latest 只用于临时验证
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_name }}
+          # GitHub Actions 缓存: 两个架构分别编译很慢, 缓存能省下大半时间
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
