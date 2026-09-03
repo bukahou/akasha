@@ -29,6 +29,10 @@ type Config struct {
 	// loc=UTC 而非 Local: 容器内是 UTC, 混用会让日志时间与 DB 时间对不上
 	DBDSN string `env:"AKASHA_DB_DSN,required"`
 
+	// ClientsFile RP 注册表 yaml 路径 (K8s 经 Secret 挂载, 本地开发指向自己的文件)。
+	// 无默认值: clients 是登录的第一道门, 忘配时启动即炸优于"默默加载了空表"。
+	ClientsFile string `env:"AKASHA_CLIENTS_FILE,required"`
+
 	// ---- 签名 ----
 	SigningKeyPath string `env:"AKASHA_SIGNING_KEY_PATH" envDefault:"./signing-key.pem"` // RSA 私钥 PEM (永不入库/入 git)
 
