@@ -71,6 +71,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -87,6 +88,19 @@ import (
 )
 
 func main() {
+	// 子命令: akasha validate-clients <path> —— 提交 clients.yaml 前的本地自查。
+	// 与启动共用同一套校验 (NewRegistryFromFile), 不存在"本地过了线上炸"的口径差。
+	// 放在配置加载之前: 校验一个文件不需要 DSN 和盐。
+	if len(os.Args) > 2 && os.Args[1] == "validate-clients" {
+		reg, err := client.NewRegistryFromFile(os.Args[2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ %s 合法, %d 个 client\n", os.Args[2], reg.Size())
+		return
+	}
+
 	// ① 结构化日志
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
@@ -123,7 +137,13 @@ func main() {
 	accountSvc := account.NewService(accountRepo)
 
 	// client: RP 注册表。谁能来要身份、能回跳到哪, 由它说了算 (开放重定向的唯一防线)。
-	clientReg := client.NewRegistry(db)
+	// 来源是随部署挂载的 yaml (clients 是配置不是状态, 变更走 git + 滚动重启);
+	// 文件不合法在这里就炸 —— readiness 不过, 旧 pod 继续服务, 坏配置到不了线上。
+	clientReg, err := client.NewRegistryFromFile(cfg.ClientsFile)
+	if err != nil {
+		slog.Error("client 注册表加载失败", "path", cfg.ClientsFile, "err", err)
+		os.Exit(1)
+	}
 
 	// op: 协议核心。issuer 是写进每张 JWT 的 iss (协议层身份, 定了不改);
 	// 四个 TTL 决定 code 与三种 token 的生命周期 (无会话, 故无会话 TTL)。

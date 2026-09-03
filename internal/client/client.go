@@ -1,16 +1,24 @@
 // Package client RP 注册表: 谁有资格找 akasha 要身份。
-// clients 表校验 = OIDC 安全的第一道门: client_id 存在 + secret 匹配 + redirect_uri 精确白名单。
+// 注册表校验 = OIDC 安全的第一道门: client_id 存在 + secret 匹配 + redirect_uri 精确白名单。
+//
+// # 为什么从 clients 表改成文件 (2026-09-03 定案)
+//
+// clients 本质是配置不是状态: akasha 明确不做动态客户端注册 (RFC 7591 已否),
+// 这份数据在运行时【没有任何合法写路径】—— 唯一的写者曾是拿着 SQL 提示符的人,
+// 零审计。改为随部署挂载的 yaml 文件后: 变更走 git diff + ArgoCD diff 双重人眼,
+// 内容一变 Secret 哈希后缀变 → 滚动重启生效; 手改生产库这条路被物理拆除。
+//
+// 坏文件在启动时被校验拦下 → 新 pod 起不来 → 旧 pod 继续服务。
+// ⚠️ 这张安全网只在旧 pod 活着时有效: 滚动失败必须立即 revert, 不许留着
+// Degraded 过夜 —— 否则之后任何节点故障都会让容量单调衰减。
 package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 // 客户端类型 (RFC 6749 §2.1)。
@@ -23,21 +31,21 @@ const (
 	TypePublic = "public"
 )
 
-// Client 对应 clients 表。
+// Client 一条 RP 注册记录 (来源: AKASHA_CLIENTS_FILE 指向的 yaml)。
 type Client struct {
-	ID           int64  `gorm:"column:id;primaryKey"`
-	ClientID     string `gorm:"column:client_id"`
-	ClientType   string `gorm:"column:client_type"`
-	SecretHash   string `gorm:"column:secret_hash"`
-	Name         string `gorm:"column:name"`
-	RedirectURIs string `gorm:"column:redirect_uris"` // JSON 数组字符串
+	ClientID   string `yaml:"client_id"`
+	ClientType string `yaml:"client_type"`
+	// SecretHash bcrypt(client_secret)。confidential 必填; public 必须为空 ——
+	// public 客户端带 secret 说明写的人对类型有误解, 加载时直接拒绝。
+	SecretHash string `yaml:"secret_hash"`
+	Name       string `yaml:"name"`
+	// RedirectURIs 回调白名单, 精确匹配 (loopback 豁免端口)。
+	RedirectURIs []string `yaml:"redirect_uris"`
 	// PostLogoutRedirectURIs 登出后可回跳的地址, 与 RedirectURIs 分开注册。
 	// 两者语义不同: 一个接收授权码, 一个是给用户看的落地页; 混用会让
 	// "能接收 code 的端点"和"能被登出流程跳到的页面"这两个权限意外等价。
-	PostLogoutRedirectURIs string `gorm:"column:post_logout_redirect_uris"`
+	PostLogoutRedirectURIs []string `yaml:"post_logout_redirect_uris"`
 }
-
-func (Client) TableName() string { return "clients" }
 
 // IsPublic 是否为公开客户端 (不要求 client_secret)。
 func (c *Client) IsPublic() bool { return c.ClientType == TypePublic }
@@ -49,26 +57,32 @@ var (
 	ErrSecretNotAllowed  = errors.New("public 客户端不应携带 client_secret")
 )
 
-// Registry clients 表的查询与校验门面。
+// Registry 注册表的查询与校验门面。
+//
+// 内容在进程启动时从文件一次性加载并校验, 之后只读 —— 变更靠改文件触发
+// 滚动重启, 不做运行时热更新 (ConfigMap 卷更新有 kubelet 延迟且 subPath
+// 不更新, 滚动重启是零代码的标准做法)。
 type Registry struct {
-	db *gorm.DB
+	byID map[string]*Client
 }
 
-func NewRegistry(db *gorm.DB) *Registry {
-	return &Registry{db: db}
+// newRegistry 由已通过校验的条目构建注册表。
+func newRegistry(clients []Client) *Registry {
+	m := make(map[string]*Client, len(clients))
+	for i := range clients {
+		m[clients[i].ClientID] = &clients[i]
+	}
+	return &Registry{byID: m}
 }
 
 // FindByClientID 按 client_id 取注册信息。
-func (r *Registry) FindByClientID(ctx context.Context, clientID string) (*Client, error) {
-	var c Client
-	err := r.db.WithContext(ctx).Where("client_id = ?", clientID).First(&c).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+// ctx 保留在签名里: 调用方不该关心注册表在内存还是远端, 换实现不改调用点。
+func (r *Registry) FindByClientID(_ context.Context, clientID string) (*Client, error) {
+	c, ok := r.byID[clientID]
+	if !ok {
 		return nil, ErrClientNotFound
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return c, nil
 }
 
 // ValidateRedirectURI 回调白名单校验 —— 开放重定向的唯一防线。
@@ -76,7 +90,7 @@ func (r *Registry) FindByClientID(ctx context.Context, clientID string) (*Client
 // 默认精确匹配, 不做前缀或通配。唯一的例外是 loopback (见 loopbackMatches),
 // 那是 RFC 8252 §7.3 的硬性要求而非放松。
 func (r *Registry) ValidateRedirectURI(c *Client, redirectURI string) error {
-	return matchURI(c.RedirectURIs, redirectURI, "redirect_uris")
+	return matchURI(c.RedirectURIs, redirectURI)
 }
 
 // ValidatePostLogoutRedirectURI 登出回跳白名单校验。
@@ -85,17 +99,10 @@ func (r *Registry) ValidateRedirectURI(c *Client, redirectURI string) error {
 // 端点却只有一个登出落地页, 反之亦然; 更重要的是不该让"能接收授权码"顺带
 // 获得"能被登出流程跳到"的能力。
 func (r *Registry) ValidatePostLogoutRedirectURI(c *Client, uri string) error {
-	return matchURI(c.PostLogoutRedirectURIs, uri, "post_logout_redirect_uris")
+	return matchURI(c.PostLogoutRedirectURIs, uri)
 }
 
-func matchURI(rawJSON, want, field string) error {
-	if rawJSON == "" {
-		return ErrRedirectURIDenied
-	}
-	var uris []string
-	if err := json.Unmarshal([]byte(rawJSON), &uris); err != nil {
-		return fmt.Errorf("%s 配置解析失败: %w", field, err)
-	}
+func matchURI(uris []string, want string) error {
 	for _, u := range uris {
 		if u == want || loopbackMatches(u, want) {
 			return nil
@@ -170,3 +177,6 @@ func (r *Registry) Authenticate(ctx context.Context, clientID, clientSecret stri
 	}
 	return c, nil
 }
+
+// Size 注册条目数 (validate 子命令的输出用)。
+func (r *Registry) Size() int { return len(r.byID) }

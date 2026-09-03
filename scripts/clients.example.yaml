@@ -1,0 +1,23 @@
+# clients.yaml 示例 —— RP 注册表的文件形态 (真实文件在 config 私仓, 经 Secret 挂载)
+#
+# 变更流程: 改 config 仓的 clients.yaml → commit/push → ArgoCD diff → 人点 SYNC
+#           → Secret 哈希后缀变化触发滚动重启 → 新注册表生效
+# 提交前自查: go run ./cmd/akasha validate-clients <path>
+# 删除条目:   删掉整段即可; 该 client 的存量 refresh token 下次刷新即 invalid_client (期望行为)
+clients:
+  - client_id: example-app
+    client_type: confidential          # confidential | public
+    name: "示例应用"                   # 登录页 "继续前往 <name>" 的反钓鱼展示
+    # bcrypt(client_secret)。生成: go run ./scripts/bcryptgen <明文>
+    # ⚠️ 这里只放哈希; 明文放该应用自己的 K8s Secret。校验器会拒绝任何不像 bcrypt 的值。
+    secret_hash: "$2a$10$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    redirect_uris:                     # 精确匹配; loopback (127.0.0.1/[::1]) 豁免端口
+      - https://example-app.example.com/api/auth/oidc/callback
+    post_logout_redirect_uris:         # 可省略 = 登出不放行任何回跳
+      - https://example-app.example.com/
+
+  - client_id: example-cli
+    client_type: public                # public 不配 secret_hash (配了会被拒)
+    name: "示例 CLI"
+    redirect_uris:
+      - http://127.0.0.1:0/callback    # 端口 0 占位, 实际端口由 loopback 豁免放行

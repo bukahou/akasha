@@ -8,7 +8,7 @@ import "testing"
 // 而链接指向的是可信域名, 用户没有任何可疑之处可看。
 func TestValidateRedirectURI(t *testing.T) {
 	r := &Registry{}
-	c := &Client{RedirectURIs: `["https://geass.test/auth/callback","com.bukahou.app://cb"]`}
+	c := &Client{RedirectURIs: []string{"https://geass.test/auth/callback", "com.bukahou.app://cb"}}
 
 	t.Run("精确匹配放行", func(t *testing.T) {
 		for _, uri := range []string{"https://geass.test/auth/callback", "com.bukahou.app://cb"} {
@@ -38,11 +38,11 @@ func TestValidateRedirectURI(t *testing.T) {
 	})
 
 	t.Run("白名单为空时一律拒绝", func(t *testing.T) {
-		empty := &Client{RedirectURIs: `[]`}
+		empty := &Client{RedirectURIs: []string{}}
 		if err := r.ValidateRedirectURI(empty, "https://geass.test/cb"); err == nil {
 			t.Error("空白名单放行了地址")
 		}
-		none := &Client{RedirectURIs: ``}
+		none := &Client{RedirectURIs: nil}
 		if err := r.ValidateRedirectURI(none, "https://geass.test/cb"); err == nil {
 			t.Error("未配置白名单时放行了地址")
 		}
@@ -55,7 +55,7 @@ func TestValidateRedirectURI(t *testing.T) {
 // 但这是【唯一】的放宽, 且只对 IP 字面量生效。
 func TestLoopbackExemption(t *testing.T) {
 	r := &Registry{}
-	c := &Client{RedirectURIs: `["http://127.0.0.1:0/callback"]`}
+	c := &Client{RedirectURIs: []string{"http://127.0.0.1:0/callback"}}
 
 	t.Run("任意端口放行", func(t *testing.T) {
 		for _, uri := range []string{
@@ -88,7 +88,7 @@ func TestLoopbackExemption(t *testing.T) {
 	// 变量就是"localhost 算不算 loopback"。若拿 127.0.0.1 的注册值去比 localhost
 	// 的请求, host 字符串本就不同, 无论豁免是否放宽都会被拒, 测不出任何东西。
 	t.Run("localhost 不享受端口豁免", func(t *testing.T) {
-		lh := &Client{RedirectURIs: `["http://localhost:3000/callback"]`}
+		lh := &Client{RedirectURIs: []string{"http://localhost:3000/callback"}}
 		if err := r.ValidateRedirectURI(lh, "http://localhost:54321/callback"); err == nil {
 			t.Error("localhost 被豁免了端口 —— 它要经 DNS 解析, 可被 hosts 文件或 DNS 投毒" +
 				"指向别处; RFC 8252 §8.3 明确建议用 IP 字面量")
@@ -108,14 +108,14 @@ func TestLoopbackExemption(t *testing.T) {
 
 	t.Run("非 loopback 地址不豁免端口", func(t *testing.T) {
 		pub := &Registry{}
-		pc := &Client{RedirectURIs: `["https://geass.test:443/cb"]`}
+		pc := &Client{RedirectURIs: []string{"https://geass.test:443/cb"}}
 		if err := pub.ValidateRedirectURI(pc, "https://geass.test:8443/cb"); err == nil {
 			t.Error("公网地址的端口被忽略了 —— 豁免只适用于 loopback")
 		}
 	})
 
 	t.Run("IPv6 loopback 同样豁免", func(t *testing.T) {
-		v6 := &Client{RedirectURIs: `["http://[::1]:0/callback"]`}
+		v6 := &Client{RedirectURIs: []string{"http://[::1]:0/callback"}}
 		if err := r.ValidateRedirectURI(v6, "http://[::1]:12345/callback"); err != nil {
 			t.Errorf("IPv6 loopback 应放行: %v", err)
 		}
@@ -128,8 +128,8 @@ func TestLoopbackExemption(t *testing.T) {
 func TestValidatePostLogoutRedirectURI(t *testing.T) {
 	r := &Registry{}
 	c := &Client{
-		RedirectURIs:           `["https://geass.test/cb"]`,
-		PostLogoutRedirectURIs: `["https://geass.test/bye"]`,
+		RedirectURIs:           []string{"https://geass.test/cb"},
+		PostLogoutRedirectURIs: []string{"https://geass.test/bye"},
 	}
 
 	if err := r.ValidatePostLogoutRedirectURI(c, "https://geass.test/bye"); err != nil {
@@ -143,7 +143,7 @@ func TestValidatePostLogoutRedirectURI(t *testing.T) {
 		t.Error("登出地址被当作授权回调放行了")
 	}
 
-	empty := &Client{PostLogoutRedirectURIs: `[]`}
+	empty := &Client{PostLogoutRedirectURIs: []string{}}
 	if err := r.ValidatePostLogoutRedirectURI(empty, "https://geass.test/bye"); err == nil {
 		t.Error("未注册登出地址的 client 放行了跳转")
 	}
