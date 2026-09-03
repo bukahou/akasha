@@ -93,12 +93,14 @@ mysql -u root -p < scripts/schema.sql
 ./scripts/genkey.sh ./signing-key.pem
 
 # 3. 配置
-cp .env.example .env && vim .env        # 至少填 AKASHA_DB_DSN
+cp .env.example .env && vim .env        # 至少填 AKASHA_DB_DSN / AKASHA_CLIENTS_FILE
 set -a && source .env && set +a
 
-# 4. 注册一个下游应用 (client_secret 需 bcrypt 哈希)
-go run ./scripts/bcryptgen "your-client-secret"
-# 把输出的哈希连同 client_id / redirect_uris 插入 clients 表
+# 4. 注册一个下游应用 (RP 注册表是文件, 不是数据库表)
+cp scripts/clients.example.yaml ./clients.yaml
+go run ./scripts/bcryptgen "your-client-secret"   # 输出的 bcrypt 填进 secret_hash
+vim ./clients.yaml                                 # 填 client_id / name / redirect_uris
+go run ./cmd/akasha validate-clients ./clients.yaml # 与启动同一套校验, 先自查
 
 # 5. 运行
 go run ./cmd/akasha

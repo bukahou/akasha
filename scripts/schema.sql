@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS federated_identities (
 
 -- RP 注册表 (谁有资格找我要身份)
 --
+-- ⚠️ 2026-09-03 起本表【已停用】: clients 改为随部署挂载的 clients.yaml
+--    (AKASHA_CLIENTS_FILE)。理由见 CLAUDE.md「RP 注册表」一节 ——
+--    它在运行时没有合法写路径, 本质是配置不是状态; 放回配置后手改生产库
+--    这条路被物理拆除。
+--    本表暂留作最后悔棋, 待文件方案生产验证 30 天后 DROP。
+--    ⛔ 期间【不要】再 UPDATE 它 —— 改了也不生效, 只会造成两边不一致的错觉。
+--
 -- client_type 决定 /token 是否要求 client_secret:
 --   confidential  服务端应用 (geass 后端等), 能安全保管 secret
 --   public        移动 App / SPA / CLI —— 反编译或看 JS 源码即得 secret,
