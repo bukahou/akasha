@@ -51,6 +51,30 @@ jobs:
         # -count=1 禁用缓存, 确保每次真的跑
         run: go test -race -count=1 ./...
 
+  # pkg/oidcrp 是嵌套 Go 模块 (自带 go.mod), 根模块的 go build ./... 不会
+  # 下探它 —— 不单独跑, 它的回归在 CI 里完全不可见。
+  test-oidcrp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pkg/oidcrp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pkg/oidcrp/go.mod
+          cache-dependency-path: pkg/oidcrp/go.sum
+
+      - name: 构建
+        run: go build ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 测试
+        run: go test -race -count=1 ./...
+
   # 本仓公开且身份是 IdP, 误提交一次密钥的代价远高于这个 job 的成本。
   # 2026-08-16 的人工审查发现过真实用户标识被当作测试常量提交, 故把检查自动化。
   secrets-scan:
@@ -104,4 +128,8 @@ jobs:
       - name: 依赖漏洞扫描
         # govulncheck 只报告【实际被调用到】的漏洞路径, 噪音远低于单纯比对版本号。
         # 2026-08-16 的审计正是靠它发现 6 个标准库漏洞
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: 依赖漏洞扫描 (嵌套模块)
+        working-directory: pkg/oidcrp
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
