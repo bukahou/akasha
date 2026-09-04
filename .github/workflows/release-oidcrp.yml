@@ -1,0 +1,103 @@
+name: release-oidcrp
+
+# pkg/oidcrp 是嵌套 Go 模块, 它的 tag 形如 pkg/oidcrp/v0.1.0 ——
+# ⚠️ release.yml 的 'v*' 【匹配不到】它 (那个 tag 以 p 开头)。
+# 在本文件出现之前, 推送嵌套模块 tag 不触发任何 workflow: 发布路径上零检查。
+on:
+  push:
+    tags: ['pkg/oidcrp/v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要验证的已发布版本 (如 v0.1.0)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ⭐ 本作业存在的唯一理由: test.yml 的 test-oidcrp 构建的是【checkout 出来的
+  # 源码树】, 而不是【外部消费者拉到的模块】。两者的差别正是发布事故的藏身处:
+  #
+  #   · tag 忘了推        → 源码树编得过, 消费者 go get 404
+  #   · go.mod 里有 replace → 源码树编得过, 消费者拿到的模块指向不存在的路径
+  #   · go.sum 不一致      → 源码树编得过 (本地缓存), 消费者校验和不匹配
+  #
+  # 所以这里必须从【仓库之外】、以【已发布的版本号】、走【公共 proxy】拉一次。
+  consumer:
+    runs-on: ubuntu-latest
+    steps:
+      # ⛔ 刻意【不】checkout 本仓 —— 一旦 checkout, 就有可能不小心用到工作树,
+      # 那样这个作业就退化成 test-oidcrp 的复制品。
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: 解析版本号
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            v="${{ inputs.version }}"
+          else
+            # refs/tags/pkg/oidcrp/v0.1.0 → v0.1.0
+            v="${GITHUB_REF#refs/tags/pkg/oidcrp/}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "将以外部消费者身份验证: $v"
+
+      - name: 以外部消费者身份拉取并编译
+        env:
+          # ⚠️ 显式清空这三项。runner 的默认配置若把本仓当私有/免校验,
+          # 就会把这个作业要检的东西恰好遮掉 ——
+          # 那将是又一个"验证工具与被验证者共享盲区"。
+          GOPRIVATE: ''
+          GONOSUMDB: ''
+          GONOSUMCHECK: ''
+          GOFLAGS: ''
+          GOPROXY: 'https://proxy.golang.org,direct'
+          GOSUMDB: 'sum.golang.org'
+        run: |
+          set -euo pipefail
+          v='${{ steps.ver.outputs.version }}'
+          # 在仓库之外建一个干净模块, 模拟真实消费者
+          work="$(mktemp -d)"
+          cd "$work"
+          cat > go.mod <<'GOMOD'
+          module consumercheck
+
+          go 1.26.6
+          GOMOD
+          cat > main.go <<'MAIN'
+          package main
+
+          import (
+          	"fmt"
+
+          	"github.com/bukahou/akasha/pkg/oidcrp"
+          )
+
+          // 调一个导出符号: 只 import 不使用会被编译器优化掉, 检不出符号缺失。
+          func main() {
+          	if !oidcrp.DefaultSafeNext("/ok") || oidcrp.DefaultSafeNext("//evil") {
+          		panic("DefaultSafeNext 行为不符预期")
+          	}
+          	fmt.Println("消费者视角验证通过")
+          }
+          MAIN
+
+          # 刚推的 tag 可能还没进 proxy 的缓存, 重试几次而不是直接失败
+          for i in 1 2 3 4 5; do
+            if go get "github.com/bukahou/akasha/pkg/oidcrp@$v"; then
+              break
+            fi
+            echo "第 $i 次拉取失败 (proxy 可能尚未收录), 20 秒后重试"
+            sleep 20
+          done
+
+          go mod tidy
+          go run .
+
+          # go.sum 必须有该模块的条目 —— 它证明校验和数据库验证过这次拉取
+          grep -q "github.com/bukahou/akasha/pkg/oidcrp $v" go.sum \
+            || { echo "✗ go.sum 中没有 $v 的条目"; exit 1; }
+          echo "✓ 已发布模块可被外部消费者拉取、编译、运行, 且校验和已验证"
