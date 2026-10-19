@@ -105,3 +105,27 @@ func TestLoginPage_UnsafeNextNotRendered(t *testing.T) {
 		t.Error("非法 next 出现在了页面里 —— 开放重定向")
 	}
 }
+
+// TestPrivacyPage_Served 隐私政策页是 Google 同意屏幕「正式版」的发布前提 ——
+// 它 404 了, 品牌页上的链接就失效, 发布状态随时可能被 Google 打回。
+func TestPrivacyPage_Served(t *testing.T) {
+	w := render(newTestHandler(t, Deps{}), "/privacy")
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, 期望 200", w.Code)
+	}
+	for _, want := range []string{"隐私政策", "openid", "bukahou@gmail.com"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("隐私政策页缺少 %q", want)
+		}
+	}
+}
+
+// TestPrivacyPage_LinkedFromPages 登录页与说明页都要能点到隐私政策。
+func TestPrivacyPage_LinkedFromPages(t *testing.T) {
+	h := newTestHandler(t, Deps{Providers: []string{"google"}})
+	for _, target := range []string{"/login", "/"} {
+		if body := render(h, target).Body.String(); !strings.Contains(body, `href="/privacy"`) {
+			t.Errorf("%s 页面没有隐私政策链接", target)
+		}
+	}
+}

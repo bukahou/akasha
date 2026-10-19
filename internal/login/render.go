@@ -65,6 +65,10 @@ func (rd *renderer) renderNotice(w http.ResponseWriter, data noticePageData) {
 	rd.render(w, http.StatusOK, "notice.html", data)
 }
 
+func (rd *renderer) renderPrivacy(w http.ResponseWriter) {
+	rd.render(w, http.StatusOK, "privacy.html", nil)
+}
+
 func (rd *renderer) render(w http.ResponseWriter, status int, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)

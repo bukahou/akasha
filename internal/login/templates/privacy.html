@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Akasha 隐私政策</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 48px 16px;
+      font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, #241b3d, #0f0d17 60%);
+      color: #e9e6f5;
+    }
+    .card {
+      max-width: 680px; margin: 0 auto; padding: 36px 32px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+    }
+    h1 { margin: 0; font-size: 22px; letter-spacing: 2px; font-weight: 700; }
+    .sub { margin: 6px 0 24px; font-size: 13px; color: #a9a3c4; }
+    h2 { margin: 26px 0 8px; font-size: 15px; color: #d6d1ee; }
+    p, li { font-size: 14px; line-height: 1.85; color: #b7b1d1; }
+    p { margin: 0 0 8px; }
+    ul { margin: 0 0 8px; padding-left: 20px; }
+    a { color: #c4b5fd; }
+    .en { margin-top: 32px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Akasha 隐私政策</h1>
+    <div class="sub">最后更新：2026-10-19</div>
+
+    <p>
+      akasha 是 bukahou 旗下应用（如 Geass）共用的登录服务。它只负责确认"你是谁"，
+      不提供任何业务功能。本页说明 akasha 处理哪些个人信息，以及如何处理。
+    </p>
+
+    <h2>我们获取哪些信息</h2>
+    <p>你使用 Google 登录时，akasha 只请求 <code>openid</code>、<code>email</code>、<code>profile</code> 三项基础权限，从 Google 获取：</p>
+    <ul>
+      <li>Google 账号的唯一标识（用于下次识别同一个人）</li>
+      <li>邮箱地址及其是否已验证</li>
+      <li>显示名称与头像链接</li>
+    </ul>
+    <p>akasha 不保存任何密码，也不读取你 Google 账号中的邮件、文件、通讯录等其他数据。</p>
+
+    <h2>信息的用途</h2>
+    <ul>
+      <li>确认你的身份，完成登录</li>
+      <li>把你的账号信息（标识、邮箱、名称、头像）提供给你正在登录的那个应用，且只提供该应用申请的部分</li>
+    </ul>
+    <p>
+      每个应用拿到的用户标识互不相同，不同应用之间无法据此把你关联起来。
+      我们不出售、不出租你的信息，不用于广告，也不提供给上述应用以外的第三方。
+    </p>
+
+    <h2>存储与保留</h2>
+    <p>
+      账号信息保存在加密传输的数据库中，保留至你要求删除为止。
+      登录过程中使用的临时 Cookie 只用于防止伪造请求，几分钟后自动失效。
+    </p>
+
+    <h2>删除与联系</h2>
+    <p>
+      如需查询、更正或删除你的账号信息，或对本政策有任何疑问，请发邮件至
+      <a href="mailto:bukahou@gmail.com">bukahou@gmail.com</a>。
+      你也可以随时在 Google 账号的「第三方应用和服务」中撤销对 akasha 的授权。
+    </p>
+
+    <h2>政策变更</h2>
+    <p>本政策如有变更，会更新本页并修改顶部的日期。</p>
+
+    <div class="en">
+      <h2>Summary (English)</h2>
+      <p>
+        akasha is the shared sign-in service for bukahou's apps. When you sign in with Google, it requests only the
+        <code>openid</code>, <code>email</code> and <code>profile</code> scopes and stores your Google account identifier,
+        email address, display name and profile picture URL. This data is used only to sign you in and is shared only with
+        the app you are signing in to. It is never sold, used for advertising, or shared with anyone else. akasha stores no
+        passwords. To access or delete your data, contact <a href="mailto:bukahou@gmail.com">bukahou@gmail.com</a>.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

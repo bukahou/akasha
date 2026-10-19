@@ -43,6 +43,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// 把所有未注册路径 (含拼错的端点) 都吞进来, 掩盖 404
 	mux.HandleFunc("GET /{$}", h.showNotice)
 	mux.HandleFunc("GET /login", h.showLogin)
+	mux.HandleFunc("GET /privacy", h.showPrivacy)
 }
 
 // showLogin 展示上游登录入口。
@@ -76,6 +77,14 @@ func (h *Handler) showNotice(w http.ResponseWriter, r *http.Request) {
 	h.render.renderNotice(w, noticePageData{
 		Authenticated: r.URL.Query().Get("authenticated") == "1",
 	})
+}
+
+// showPrivacy 隐私政策页。
+//
+// 存在的理由是 Google 的发布要求: 同意屏幕从「测试」改为「正式版」时,
+// 品牌页必须填一个已授权网域下的隐私政策链接。内容是纯静态说明, 不读任何状态。
+func (h *Handler) showPrivacy(w http.ResponseWriter, r *http.Request) {
+	h.render.renderPrivacy(w)
 }
 
 // sanitizeNext 只放行本站合法断点 (防开放重定向); 其余一律清空。

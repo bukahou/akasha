@@ -53,6 +53,7 @@
       margin-top: 20px; font-size: 12px; line-height: 1.7;
       color: #8b87a3; text-align: center;
     }
+    .hint a { color: #8b87a3; }
   </style>
 </head>
 <body>
@@ -68,7 +69,7 @@
       <a class="federated" href="/federation/{{.}}/start?next={{$.Next | urlquery}}">{{$.Label .}}</a>
     {{end}}
 
-    <p class="hint">akasha 不保存密码，登录完全由上述第三方完成。</p>
+    <p class="hint">akasha 不保存密码，登录完全由上述第三方完成。<br><a href="/privacy">隐私政策</a></p>
   </div>
 </body>
 </html>
